@@ -1,0 +1,229 @@
+import logging
+from typing import List, Any
+
+from pydantic import Field, model_validator
+
+from moatless.actions.action import Action, ActionOutput
+from moatless.file_context import FileContext
+from moatless.index.code_index import is_test
+from moatless.schema import RewardScaleEntry, TestStatus, TestResult
+
+logger = logging.getLogger(__name__)
+
+
+class RunTests(Action):
+    """
+    Run the specified unit tests on the codebase.
+    """
+
+    scratch_pad: str = Field(..., description="Your reasoning on what tests to run.")
+
+    test_files: List[str] = Field(..., description="The list of test files to run")
+
+    @model_validator(mode="before")
+    @classmethod
+    def fix_scratch_pad(cls, data: Any) -> Any:
+        """TODO: Just to be able to read old search trees without scratch_pad set. Should be removed."""
+        if isinstance(data, dict):
+            if "scratch_pad" not in data:
+                data["scratch_pad"] = ""
+        return data
+
+    def execute(self, file_context: FileContext | None = None) -> ActionOutput:
+        """
+        Run tests on the codebase.
+        """
+
+        if self.test_files:
+            existing_test_files = [
+                test_file
+                for test_file in self.test_files
+                if self._workspace.file_repo.file_exists(test_file)
+            ]
+
+            missing_test_files = set(self.test_files).difference(
+                set(existing_test_files)
+            )
+            if missing_test_files:
+                logger.info(f"Missing test files: {missing_test_files}")
+
+            actual_test_files = [
+                file.file_path
+                for file in file_context.files
+                if file.file_path in existing_test_files
+                if is_test(file.file_path)
+            ]
+            not_existing_test_files = set(existing_test_files).difference(
+                set([file for file in actual_test_files])
+            )
+            if not_existing_test_files:
+                logger.info(f"Not actual test files: {not_existing_test_files}")
+
+            test_files = actual_test_files
+
+        else:
+            test_files = [
+                file.file_path for file in file_context.files if is_test(file.file_path)
+            ]
+            if test_files:
+                logger.info(
+                    f"No test files provided, will run tests found in context: {test_files}"
+                )
+
+        if not test_files:
+            logger.info(
+                "The agent didn't select any tests. Will search and select test files based on files ."
+            )
+
+            if self.test_files:
+                file_paths = self.test_files
+                if not file_paths:
+                    file_paths = [file.file_path for file in file_context.files]
+
+                for file_path in file_paths:
+                    search_results = self._workspace.code_index.find_test_files(
+                        file_path, query=file_path, max_results=2, max_spans=2
+                    )
+
+                    for search_result in search_results:
+                        test_files.append(search_result.file_path)
+
+        logger.info(f"Running tests: {test_files}")
+        test_results = self._workspace.run_tests(file_context, test_files)
+        failing_tests = [
+            issue
+            for issue in test_results
+            if issue.status in [TestStatus.FAILED, TestStatus.ERROR]
+        ]
+
+        tests_with_output = [
+            issue for issue in failing_tests if issue.message and issue.file_path
+        ]
+
+        if failing_tests:
+            logger.info(
+                f"{len(failing_tests)} out of {len(test_results)} tests failed. "
+                f"Include spans for {len(tests_with_output)} tests with output."
+            )
+
+            # Add failing tests to context.
+            failed_test_spans_by_file_path: dict = {}
+            for test_result in tests_with_output:
+                if test_result.file_path:
+                    failed_test_spans_by_file_path.setdefault(
+                        test_result.file_path, []
+                    ).append(test_result.span_id)
+
+            for test_file in test_files:
+                failed_span_ids = failed_test_spans_by_file_path.get(test_file)
+                if failed_span_ids:
+                    test_context_file = file_context.get_file(test_file)
+                    test_context_file.add_spans(failed_span_ids)
+
+        return self.create_output(test_results)
+
+    def create_output(self, test_results: List[TestResult]) -> ActionOutput:
+        if not test_results:
+            return ActionOutput(
+                message="No tests were run",
+                properties={"test_results": []},
+            )
+
+        failure_count = sum(
+            1 for issue in test_results if issue.status == TestStatus.FAILED
+        )
+        error_count = sum(
+            1 for issue in test_results if issue.status == TestStatus.ERROR
+        )
+
+        passed_count = len(test_results) - failure_count - error_count
+
+        test_result_strings = []
+
+        for test_result in test_results:
+            if not test_result.message or test_result.status not in [
+                TestStatus.FAILED,
+                TestStatus.ERROR,
+            ]:
+                continue
+
+            attributes = ""
+            if test_result.file_path:
+                attributes += f"{test_result.file_path}"
+
+                if test_result.span_id:
+                    attributes += f" {test_result.span_id}"
+
+                if test_result.line:
+                    attributes += f", line: {test_result.line}"
+
+            test_result_strings.append(
+                f"* {test_result.status.value} {attributes}>\n```\n{test_result.message}\n```\n"
+            )
+
+        response_msg = f"Ran {len(test_results)} tests. {passed_count} passed. {failure_count} failed. {error_count} errors."
+
+        extra = ""
+        if test_result_strings:
+            extra += "\n\n"
+            extra += "\n".join(test_result_strings)
+
+        result_dicts = [result.model_dump() for result in test_results]
+        return ActionOutput(
+            message=response_msg,
+            extra=extra,
+            expect_correction=failure_count > 0 or error_count > 0,
+            properties={"test_results": result_dicts},
+        )
+
+    def get_evaluation_criteria(self, trajectory_length) -> List[str]:
+        criteria = [
+            "Test Result Evaluation: Analyze test results in conjunction with the proposed code changes.",
+            "Test Failures Categorization: Differentiate between minor, foreseeable, and unforeseeable failures.",
+            " * Minor, Easily Fixable Failures: Lightly penalize or treat as neutral.",
+            " * Foreseeable Failures: Penalize appropriately based on the complexity of the fix.",
+            " * Unforeseeable Failures: Penalize very lightly or reward for providing new insights.",
+            "Impact of Failures: Consider the overall impact of test failures on the solution's viability.",
+            "Iterative Improvement: Encourage fixing minor issues in subsequent iterations.",
+            "Explanation Requirement: In your explanation, describe any test failures, their likely causes, and suggest potential next steps.",
+        ]
+        return criteria
+
+    def get_reward_scale(self, trajectory_length) -> List[RewardScaleEntry]:
+        return [
+            RewardScaleEntry(
+                min_value=90,
+                max_value=100,
+                description="All tests pass successfully, confirming the solution's correctness.",
+            ),
+            RewardScaleEntry(
+                min_value=75,
+                max_value=89,
+                description="Most tests pass, with minor, easily fixable failures.",
+            ),
+            RewardScaleEntry(
+                min_value=50,
+                max_value=74,
+                description="Tests have some failures, but they are minor or unforeseeable, and the agent shows understanding in interpreting results.",
+            ),
+            RewardScaleEntry(
+                min_value=25,
+                max_value=49,
+                description="Tests have noticeable failures; some may have been foreseeable, but the agent can address them with effort.",
+            ),
+            RewardScaleEntry(
+                min_value=0,
+                max_value=24,
+                description="Tests have significant failures; the agent's interpretation is minimal or incorrect.",
+            ),
+            RewardScaleEntry(
+                min_value=-49,
+                max_value=-1,
+                description="Tests fail significantly; the agent misinterprets results or shows lack of progress, foreseeable failures are not addressed.",
+            ),
+            RewardScaleEntry(
+                min_value=-100,
+                max_value=-50,
+                description="The action is counterproductive, demonstrating misunderstanding or causing setbacks, test failures are severe and could have been anticipated.",
+            ),
+        ]
