@@ -3,10 +3,10 @@ import logging
 from typing import Optional, List, Dict, Any, Type
 
 from instructor import OpenAISchema
-from pydantic import BaseModel, Field, PrivateAttr
+from pydantic import BaseModel, Field
 
-from moatless.actions.action import Action, ActionExecution, ActionOutput
-from moatless.completion import Usage, Completion
+from moatless.actions.model import ActionArguments, Observation
+from moatless.completion.model import Usage, Completion
 from moatless.file_context import FileContext
 from moatless.repository.repository import Repository
 
@@ -33,10 +33,10 @@ class Node(BaseModel):
     is_duplicate: bool = Field(
         False, description="Flag to indicate if the node is a duplicate"
     )
-    action: Optional[Action] = Field(
+    action: Optional[ActionArguments] = Field(
         None, description="The action associated with the node"
     )
-    output: Optional[ActionOutput] = Field(None, description="The output of the action")
+    observation: Optional[Observation] = Field(None, description="The output of the action")
     reward: Optional[Reward] = Field(None, description="The reward of the node")
     visits: int = Field(0, description="The number of times the node has been visited")
     value: float = Field(0.0, description="The total value (reward) of the node")
@@ -51,9 +51,8 @@ class Node(BaseModel):
     completions: Dict[str, Completion] = Field(
         default_factory=dict, description="The completions used in this node"
     )
-    possible_actions: List[Type[Action]] = Field(
-        default_factory=list,
-        description="List of possible action types for this node"
+    possible_actions: List[str] = Field(
+        default_factory=list, description="List of possible action types for this node"
     )
 
     @classmethod
@@ -74,7 +73,7 @@ class Node(BaseModel):
 
     def is_terminal(self) -> bool:
         """Determine if the current state is a terminal state."""
-        if self.output and self.output.terminal:
+        if self.observation and self.observation.terminal:
             return True
 
         return False
@@ -141,7 +140,7 @@ class Node(BaseModel):
         for child in self.children:
             nodes.extend(child.get_all_nodes())
         return nodes
-    
+
     def get_root(self) -> "Node":
         node = self
         while node.parent:
@@ -192,33 +191,32 @@ class Node(BaseModel):
         """
 
         def serialize_node(node: "Node") -> Dict[str, Any]:
-            node_dict = {
-                "node_id": node.node_id,
-                "visits": node.visits,
-                "value": node.value,
-                "max_expansions": node.max_expansions,
-                "message": node.message,
-                "feedback": node.feedback,
-                "is_duplicate": node.is_duplicate,
-                "possible_actions": [action.__name__ for action in node.possible_actions],
-            }
+            exclude_set = {"parent", "children"}
+            if "exclude" in kwargs:
+                if isinstance(kwargs["exclude"], set):
+                    exclude_set.update(kwargs["exclude"])
+                elif isinstance(kwargs["exclude"], dict):
+                    exclude_set.update(kwargs["exclude"].keys())
+            
+            new_kwargs = {k: v for k, v in kwargs.items() if k != "exclude"}
+            node_dict = super().model_dump(exclude=exclude_set, **new_kwargs)
 
-            if node.action:
+            if node.action and "action" not in exclude_set:
                 node_dict["action"] = node.action.model_dump(**kwargs)
 
-            if node.completions:
+            if node.completions and "completions" not in exclude_set:
                 node_dict["completions"] = {
                     key: completion.model_dump(**kwargs)
                     for key, completion in node.completions.items()
                 }
 
-            if node.reward:
+            if node.reward and "reward" not in exclude_set:
                 node_dict["reward"] = node.reward.model_dump(**kwargs)
 
-            if node.output:
-                node_dict["output"] = node.output.model_dump(**kwargs)
+            if node.observation and "output" not in exclude_set:
+                node_dict["output"] = node.observation.model_dump(**kwargs)
 
-            if node.file_context:
+            if node.file_context and "file_context" not in exclude_set:
                 node_dict["file_context"] = node.file_context.model_dump(**kwargs)
 
             if not kwargs.get("exclude") or "children" not in kwargs.get("exclude"):
@@ -264,24 +262,17 @@ class Node(BaseModel):
             max_expansions=node_data["max_expansions"],
             message=node_data["message"],
             feedback=node_data.get("feedback"),
-            is_duplicate=node_data.get("is_duplicate", False)
+            is_duplicate=node_data.get("is_duplicate", False),
         )
 
         if node_data.get("possible_actions"):
-            node.possible_actions = [Action.get_action_class(action_name) for action_name in node_data.get("possible_actions")]
-
-        if node_data.get("execution"):
-            # TODO: To keep backward compatiblity
-            execution = ActionExecution.model_validate(node_data["execution"])
-            node.action = execution.action
-            node.completions["build"] = execution.build_completion
-            node.output = execution.output
+            node.possible_actions = node_data.get("possible_actions")
 
         if node_data.get("action"):
-            node.action = Action.model_validate(node_data["action"])
+            node.action = ActionArguments.model_validate(node_data["action"])
 
         if node_data.get("output"):
-            node.output = ActionOutput.model_validate(node_data["output"])
+            node.observation = Observation.model_validate(node_data["output"])
 
         if node_data.get("completions"):
             for key, completion_data in node_data["completions"].items():
@@ -317,7 +308,7 @@ def _append_ascii_node(
     if node.action:
         state_params.append(node.action.name)
 
-        if node.output and node.output.expect_correction:
+        if node.observation and node.observation.expect_correction:
             state_params.append("expect_correction")
 
     state_info = f"Node{node.node_id}"
@@ -379,3 +370,4 @@ def color_yellow(text: Any) -> str:
 
 def color_white(text: Any) -> str:
     return f"\033[97m{text}\033[0m"
+

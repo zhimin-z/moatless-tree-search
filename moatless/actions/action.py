@@ -1,136 +1,46 @@
 import importlib
 import logging
-import pkgutil
-from typing import Any, Optional, List, Dict, Type, Tuple
+from abc import ABC
+from typing import List, Type, Tuple, Any, Dict
 
-from instructor import OpenAISchema
-from instructor.utils import classproperty, extract_json_from_codeblock
-from openai.types.chat import ChatCompletion
-from pydantic import Field, BaseModel, PrivateAttr
+from pydantic import BaseModel, ConfigDict
 
-from moatless.completion import Completion, ToolCall
+from moatless.actions.model import ActionArguments, Observation
 from moatless.file_context import FileContext
-from moatless.schema import RewardScaleEntry
-from moatless.workspace import Workspace
+from moatless.index import CodeIndex
+from moatless.repository.repository import Repository
+from moatless.value_function.model import RewardScaleEntry
 
 logger = logging.getLogger(__name__)
 
 
-class ActionOutput(BaseModel):
-    message: str = Field(
-        description="The message returned to the agent, will be displayed in chat histoy."
-    )
-    extra: Optional[str] = Field(
-        None,
-        description="Extra information to be returned to the agent, will not be displayed in chat history.",
-    )
-    terminal: bool = Field(
-        False, description="Indicates if this action results in a terminal state"
-    )
-    expect_correction: bool = Field(
-        False, description="Indicates that a correction is expected after this action"
-    )
-    properties: Optional[Dict[str, Any]] = Field(
-        None, description="Additional properties"
-    )
-    execution_completion: Optional[Completion] = Field(
-        None, description="Completion created when executing the action"
-    )
+class Action(BaseModel, ABC):
+    args_schema: Type[ActionArguments]
 
-    @classmethod
-    def create(cls, message: str, terminal: bool = False):
-        return cls(message=message, terminal=terminal)
-
-
-class Action(OpenAISchema):
-    _workspace: Workspace = PrivateAttr(None)
-    _file_context: FileContext | None = PrivateAttr(None)
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     def __init__(self, **data):
         super().__init__(**data)
 
-    def set_workspace(self, workspace: Workspace):
-        self._workspace = workspace
-
-    def set_file_context(self, file_context: FileContext):
-        self._file_context = file_context
-
-    def execute(self, file_context: FileContext | None = None) -> ActionOutput:
+    def execute(
+        self, args: ActionArguments, file_context: FileContext
+    ) -> Observation:
         """
         Execute the action.
         """
-        if self._workspace is None:
-            raise ValueError(
-                "Workspace not set. Call set_workspace() before executing the action."
-            )
 
         message = self._execute(file_context=file_context)
-        return ActionOutput.create(message)
+        return Observation.create(message)
 
-    def _execute(self, file_context: FileContext | None = None) -> str | None:
+    def _execute(self, file_context: FileContext) -> str | None:
         """
         Execute the action and return the updated FileContext.
         """
         raise NotImplementedError("Subclasses must implement this method.")
 
-    @classmethod
-    def from_tool_call(cls, tool_args: dict[str, Any], tool_name: str | None = None):
-        return cls(**tool_args)
-
-    def to_tool_call(self) -> ToolCall:
-        return ToolCall(name=self.name, input=self.model_dump())
-
     @property
-    def action_name(self):
+    def name(self) -> str:
         return self.__class__.__name__
-
-    @classproperty
-    def openai_tool_schema(cls):
-        return {"type": "function", "function": cls.openai_schema}
-
-    @property
-    def log_name(self):
-        return self.__class__.__name__
-
-    @property
-    def name(self):
-        return self.__class__.__name__
-
-    def equals(self, other: "Action") -> bool:
-        return self.model_dump(exclude={"scratch_pad"}) == other.model_dump(
-            exclude={"scratch_pad"}
-        )
-
-    def to_prompt(self):
-        prompt = f"Action: {self.__class__.__name__}\n"
-        prompt += "\n".join(
-            [
-                f"  {k}: {v}"
-                for k, v in self.model_dump(exclude={"thoughts", "scratch_pad"}).items()
-            ]
-        )
-        return prompt
-
-    @classmethod
-    def parse_json(
-        cls: type[BaseModel],
-        completion: ChatCompletion,
-        validation_context: Optional[dict[str, Any]] = None,
-        strict: Optional[bool] = None,
-    ) -> BaseModel:
-        message = completion.choices[0].message.content or ""
-
-        # Because Qwen-2.5-72B-Instruct keeps adding those to the responses...
-        if "\x00" in message:
-            logger.info(f"parse_json() Replace \x00 in: {message}")
-            message = message.replace("\x00", "")
-        message = extract_json_from_codeblock(message)
-
-        return cls.model_validate_json(
-            message,
-            context=validation_context,
-            strict=strict,
-        )
 
     def get_evaluation_criteria(self, trajectory_length) -> List[str]:
         if trajectory_length < 3:
@@ -179,45 +89,9 @@ class Action(OpenAISchema):
             ),
         ]
 
-    @classmethod
-    def create_action(cls, action_name: str, **data) -> "Action":
-        """
-        Dynamically import and create the appropriate action instance.
-        """
-        action_class = cls.get_action_class(action_name)
-        return action_class(**data)
-
-    @staticmethod
-    def get_action_class(action_name: str) -> Type["Action"]:
-        """
-        Dynamically import and return the appropriate action class from all modules in moatless.actions.
-        """
-        actions_package = importlib.import_module("moatless.actions")
-        
-        for _, module_name, _ in pkgutil.iter_modules(actions_package.__path__):
-            full_module_name = f"moatless.actions.{module_name}"
-            module = importlib.import_module(full_module_name)
-            action_class = getattr(module, action_name, None)
-            if action_class and issubclass(action_class, Action):
-                return action_class
-
-        raise ValueError(f"Unknown action: {action_name}")
-
-    @classmethod
-    def model_validate(cls: Type["Action"], obj: Any) -> "Action":
-        if isinstance(obj, dict) and "action_name" in obj:
-            action_name = obj.pop("action_name")
-            return cls.create_action(action_name, **obj)
-        return super().model_validate(obj)
-
-    def model_dump(self, **kwargs) -> Dict[str, Any]:
-        data = super().model_dump(**kwargs)
-        data["action_name"] = self.__class__.__name__
-        return data
-
     @staticmethod
     def generate_reward_scale_entries(
-        descriptions: List[Tuple[int, int, str]]
+        descriptions: List[Tuple[int, int, str]],
     ) -> List[RewardScaleEntry]:
         """
         Generate a list of RewardScaleEntry objects based on the provided descriptions.
@@ -260,37 +134,40 @@ At this stage, the agent is still working on the solution. Your task is twofold:
 2. **Alternative Feedback**: Independently of your evaluation, provide guidance for an alternative problem-solving branch. This ensures parallel exploration of different solution paths.
 """
 
-
-class ActionExecution(BaseModel):
-    action: Action = Field(..., description="The executed action")
-    output: Optional[ActionOutput] = Field(
-        None, description="The output of the executed action"
-    )
-    build_completion: Optional[Completion] = Field(
-        None, description="The completion prompt to build the action"
-    )
-
     def model_dump(self, **kwargs) -> Dict[str, Any]:
-        data = super().model_dump(**kwargs)
-        data["action"] = self.action.model_dump(**kwargs)
-        data["output"] = self.output.model_dump(**kwargs) if self.output else None
-        if not kwargs.get("exclude") or "build_completion" not in kwargs.get("exclude"):
-            data["build_completion"] = (
-                self.build_completion.model_dump(**kwargs)
-                if self.build_completion
-                else None
-            )
-        return data
+        dump = {
+            "action_class": f"{self.__class__.__module__}.{self.__class__.__name__}"
+        }
+        dump.update(super().model_dump(**kwargs))
+        dump.pop("args_schema", None)
+        return dump
 
     @classmethod
-    def model_validate(cls, obj: Any, **kwargs):
-        if (
-            isinstance(obj, dict)
-            and "action" in obj
-            and isinstance(obj["action"], dict)
-        ):
-            action_data = obj["action"]
-            if "action_name" in action_data:
-                action_name = action_data.pop("action_name")
-                obj["action"] = Action.create_action(action_name, **action_data)
-        return super().model_validate(obj, **kwargs)
+    def model_validate(cls, obj: Any, repository: Repository = None, runtime: Any = None, code_index: CodeIndex = None) -> "Action":
+        if isinstance(obj, dict):
+            obj = obj.copy()
+            obj.pop("args_schema", None)
+            action_class_path = obj.pop("action_class", None)
+            if action_class_path:
+                module_name, class_name = action_class_path.rsplit(".", 1)
+                module = importlib.import_module(module_name)
+                action_class = getattr(module, class_name)
+
+                if hasattr(action_class, "_repository") and hasattr(action_class, "_code_index") and hasattr(action_class, "_runtime"):
+                    if repository is not None:
+                        obj.pop("repository", None)
+                    if code_index is not None:
+                        obj.pop("code_index", None)
+                    if runtime is not None:
+                        obj.pop("runtime", None)
+                    
+                    # Use provided values, falling back to serialized values if not provided
+                    return action_class(
+                        repository=repository or obj.get("repository"),
+                        code_index=code_index or obj.get("code_index"),
+                        runtime=runtime or obj.get("runtime"),
+                        **obj
+                    )
+                
+                return action_class(**obj)
+        return super().model_validate(obj)

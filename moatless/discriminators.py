@@ -4,6 +4,8 @@ from typing import Optional, List
 from instructor import OpenAISchema
 from pydantic import Field
 
+from pydantic import BaseModel
+
 from moatless.node import Node
 from moatless.search.reward import LLM_Value_Function
 from moatless.trajectory import Trajectory, TrajectoryState
@@ -14,7 +16,7 @@ from moatless.schema import Message, OpenAISchema
 logger = logging.getLogger(__name__)
 
 
-class Discriminator:
+class Discriminator(BaseModel):
     def select(self, nodes: List[Node]) -> Node | None:
         raise NotImplementedError
 

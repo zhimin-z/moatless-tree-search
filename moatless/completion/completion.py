@@ -3,152 +3,30 @@ import logging
 import os
 import random
 import string
-from typing import Optional, Union, Any, List, Tuple
+from enum import Enum
+from typing import Optional, Union, List, Tuple
 
 import instructor
 import litellm
 import openai
 from anthropic import Anthropic, AnthropicBedrock, NOT_GIVEN
 from anthropic.types import ToolUseBlock
-from anthropic.types.tool_result_block_param import Content
 from instructor import OpenAISchema
 from instructor.exceptions import InstructorRetryException
-from litellm import cost_per_token, NotFoundError
 from litellm.types.utils import ModelResponse
 from openai import AzureOpenAI, OpenAI, LengthFinishReasonError
 from pydantic import BaseModel, Field, model_validator
 
-from moatless.settings import ModelSettings, LLMResponseFormat
+from moatless.completion.model import Message, Completion
 
 logger = logging.getLogger(__name__)
 
 
-class Message(BaseModel):
-    role: str
-    content: Optional[str] = None
-
-
-class ToolCall(BaseModel):
-    name: str
-    input: dict[str, Any]
-
-
-class AssistantMessage(Message):
-    role: str = "assistant"
-    content: Optional[str] = None
-    tool_call: Optional[ToolCall] = None
-
-
-class UserMessage(Message):
-    role: str = "user"
-    content: str
-
-
-class Usage(BaseModel):
-    completion_cost: float = 0
-    completion_tokens: int = 0
-    prompt_tokens: int = 0
-
-    @classmethod
-    def from_completion_response(
-        cls, completion_response: dict | BaseModel, model: str
-    ) -> Union["Usage", None]:
-        if isinstance(completion_response, BaseModel) and hasattr(
-            completion_response, "usage"
-        ):
-            usage = completion_response.usage.model_dump()
-        elif isinstance(completion_response, dict) and "usage" in completion_response:
-            usage = completion_response["usage"]
-        else:
-            logger.warning(
-                f"No usage info available in completion response: {completion_response}"
-            )
-            return None
-
-        logger.debug(f"Usage: {json.dumps(usage, indent=2)}")
-
-        prompt_tokens = usage.get("prompt_tokens") or usage.get("input_tokens", 0)
-
-        if usage.get("cache_creation_input_tokens"):
-            prompt_tokens += usage["cache_creation_input_tokens"]
-
-        completion_tokens = usage.get("completion_tokens") or usage.get(
-            "output_tokens", 0
-        )
-
-        try:
-            cost = litellm.completion_cost(
-                completion_response=completion_response, model=model
-            )
-        except Exception:
-            # If cost calculation fails, fall back to calculating it manually
-            try:
-                prompt_cost, completion_cost = cost_per_token(
-                    model=model,
-                    prompt_tokens=prompt_tokens,
-                    completion_tokens=completion_tokens,
-                )
-                cost = prompt_cost + completion_cost
-            except NotFoundError as e:
-                logger.debug(
-                    f"Failed to calculate cost for completion response: {completion_response}. Error: {e}"
-                )
-                cost = 0
-            except Exception as e:
-                logger.error(
-                    f"Failed to calculate cost for completion response: {completion_response}. Error: {e}"
-                )
-                cost = 0
-
-        return cls(
-            completion_cost=cost,
-            completion_tokens=completion_tokens,
-            prompt_tokens=prompt_tokens,
-        )
-
-    def __add__(self, other: "Usage") -> "Usage":
-        return Usage(
-            completion_cost=self.completion_cost + other.completion_cost,
-            completion_tokens=self.completion_tokens + other.completion_tokens,
-            prompt_tokens=self.prompt_tokens + other.prompt_tokens,
-        )
-
-    def __str__(self) -> str:
-        return (
-            f"Usage(cost: ${self.completion_cost:.4f}, "
-            f"completion tokens: {self.completion_tokens}, "
-            f"prompt tokens: {self.prompt_tokens})"
-        )
-
-
-class Completion(BaseModel):
-    model: str
-    input: list[dict] | None = None
-    response: dict[str, Any] | None = None
-    usage: Usage | None = None
-
-    @classmethod
-    def from_llm_completion(
-        cls, input_messages: list[dict], completion_response: Any, model: str
-    ) -> Optional["Completion"]:
-        if isinstance(completion_response, BaseModel):
-            response = completion_response.model_dump()
-        elif isinstance(completion_response, dict):
-            response = completion_response
-        else:
-            logger.error(
-                f"Unexpected completion response type: {type(completion_response)}"
-            )
-            return None
-
-        usage = Usage.from_completion_response(completion_response, model)
-
-        return cls(
-            model=model,
-            input=input_messages,
-            response=response,
-            usage=usage,
-        )
+class LLMResponseFormat(str, Enum):
+    TOOLS = "tool_call"
+    JSON = "json"
+    ANTHROPIC_TOOLS = "anthropic_tools"
+    STRUCTURED_OUTPUT = "structured_output"
 
 
 class CompletionModel(BaseModel):
@@ -169,20 +47,6 @@ class CompletionModel(BaseModel):
     stop_words: Optional[list[str]] = Field(
         default=None, description="The stop words to use for completion"
     )
-
-    @classmethod
-    def from_settings(cls, settings: ModelSettings):
-        if not settings:
-            raise ValueError(
-                "Model settings must be provided or set in the default settings."
-            )
-        return cls(
-            model=settings.model,
-            temperature=settings.temperature,
-            model_base_url=settings.base_url,
-            model_api_key=settings.api_key,
-            # response_format=settings.response_format
-        )
 
     @model_validator(mode="after")
     def validate_response_format(self):
@@ -212,6 +76,53 @@ class CompletionModel(BaseModel):
 
         return self
 
+    def create_completion(
+        self,
+        messages: List[Message],
+        system_prompt: str,
+        actions: List[type[OpenAISchema]] | None = None,
+    ) -> Tuple[OpenAISchema, Completion]:
+        completion_messages = self._map_completion_messages(messages)
+
+        if self.response_format != LLMResponseFormat.ANTHROPIC_TOOLS:
+            completion_messages.insert(0, {"role": "system", "content": system_prompt})
+
+        try:
+            if self.response_format == LLMResponseFormat.ANTHROPIC_TOOLS:
+                action_args, completion_response = self._anthropic_completion(
+                    completion_messages, system_prompt, actions
+                )
+            elif self.response_format == LLMResponseFormat.STRUCTURED_OUTPUT:
+                action_args, completion_response = self._openai_completion(
+                    completion_messages, actions
+                )
+            elif self.response_format == LLMResponseFormat.TOOLS:
+                action_args, completion_response = self._litellm_tool_completion(
+                    completion_messages, actions
+                )
+            else:
+                action_args, completion_response = self._instructor_completion(
+                    completion_messages, actions
+                )
+        except InstructorRetryException as e:
+            logger.warning(
+                f"Failed to get completion response from LLM. {e}\n\nCompletion: {e.last_completion}"
+            )
+            raise e
+        except Exception as e:
+            logger.warning(
+                f"Failed to get completion response from LLM. {e}. Input messages:\n {json.dumps(completion_messages, indent=2)}"
+            )
+            raise e
+
+        completion = Completion.from_llm_completion(
+            input_messages=completion_messages,
+            completion_response=completion_response,
+            model=self.model,
+        )
+
+        return action_args, completion
+
     def _litellm_tool_completion(
         self,
         messages: list[dict],
@@ -228,6 +139,8 @@ class CompletionModel(BaseModel):
             model=self.model,
             max_tokens=self.max_tokens,
             temperature=self.temperature,
+            base_url=self.model_base_url,
+            api_key=self.model_api_key,
             stop=self.stop_words,
             tools=tools,
             tool_choice="auto",
@@ -322,57 +235,6 @@ class CompletionModel(BaseModel):
         )
 
         return response, completion
-
-    def create_completion(
-        self,
-        messages: List[Message],
-        system_prompt: str,
-        actions: List[type[OpenAISchema]] | None = None,
-    ) -> Tuple[OpenAISchema, Completion]:
-        completion_messages = self._map_completion_messages(messages)
-
-        if self.response_format != LLMResponseFormat.ANTHROPIC_TOOLS:
-            completion_messages.insert(0, {"role": "system", "content": system_prompt})
-
-        try:
-            if self.response_format == LLMResponseFormat.ANTHROPIC_TOOLS:
-                action_request, completion_response = self._anthropic_completion(
-                    completion_messages
-                )
-            elif not actions:
-                action_request, completion_response = self._litellm_text_completion(
-                    completion_messages
-                )
-            elif self.response_format == LLMResponseFormat.STRUCTURED_OUTPUT:
-                action_request, completion_response = self._openai_completion(
-                    completion_messages, actions
-                )
-            elif self.response_format == LLMResponseFormat.TOOLS:
-                action_request, completion_response = self._litellm_tool_completion(
-                    completion_messages, actions
-                )
-            else:
-                action_request, completion_response = self._instructor_completion(
-                    completion_messages, actions
-                )
-        except InstructorRetryException as e:
-            logger.warning(
-                f"Failed to get completion response from LLM. {e}\n\nCompletion: {e.last_completion}"
-            )
-            raise e
-        except Exception as e:
-            logger.warning(
-                f"Failed to get completion response from LLM. {e}. Input messages:\n {json.dumps(completion_messages, indent=2)}"
-            )
-            raise e
-
-        completion = Completion.from_llm_completion(
-            input_messages=completion_messages,
-            completion_response=completion_response,
-            model=self.model,
-        )
-
-        return action_request, completion
 
     def input_messages(
         self, content: str, completion: Completion | None, feedback: str | None = None
@@ -526,7 +388,8 @@ class CompletionModel(BaseModel):
         tools = []
         if actions:
             for action in actions:
-                tools.append(openai.pydantic_function_tool(action))
+                schema = action.openai_schema
+                tools.append(openai.pydantic_function_tool(action, name=schema["name"], description=schema["description"]))
 
         try:
             if actions:
@@ -590,21 +453,21 @@ class CompletionModel(BaseModel):
             return action_request, completion_response
 
     def _anthropic_completion(
-        self, messages: list[dict]
+        self,
+        messages: list[dict],
+        system_prompt: str | None = None,
+        actions: List[type[OpenAISchema]] | None = None,
     ) -> Tuple[OpenAISchema, Message]:
         if self.model.startswith("anthropic"):
             anthropic_client = AnthropicBedrock()
         else:
             anthropic_client = Anthropic()
 
-        if self.action_type:
+        if actions:
             tools = []
             tool_choice = {"type": "any"}
-            if hasattr(self.action_type, "available_actions"):
-                for action in self.action_type.available_actions():
-                    tools.append(action.anthropic_schema)
-            else:
-                tools.append(self.action_type.anthropic_schema)
+            for action in actions:
+                tools.append(action.anthropic_schema)
         else:
             tools = NOT_GIVEN
             tool_choice = NOT_GIVEN
@@ -615,7 +478,7 @@ class CompletionModel(BaseModel):
             temperature=self.temperature,
             system=[
                 {
-                    "text": self.system_prompt(),
+                    "text": system_prompt,
                     "type": "text",
                     "cache_control": {"type": "ephemeral"},
                 }
@@ -626,46 +489,33 @@ class CompletionModel(BaseModel):
         )
 
         try:
-            if not self.action_type:
-                action_request = Content(content=completion_response.content[0].text)
-            elif hasattr(self.action_type, "available_actions"):
-                action_request = None
-                if hasattr(self.action_type, "available_actions"):
-                    for block in completion_response.content:
-                        if isinstance(block, ToolUseBlock):
-                            action = None
-                            for (
-                                available_action
-                            ) in self.action_type.available_actions():
-                                if available_action.__name__ == block.name:
-                                    action = available_action
-                                    break
-
-                            if not action:
-                                raise ValueError(f"Unknown action {block.name}")
-
-                            tool_action_request = action.model_validate(block.input)
-
-                            action_request = self.action_type(
-                                action=tool_action_request
-                            )
-
-                            # TODO: We only support one action at the moment
-                            break
-                        else:
-                            logger.warning(f"Unexpected block {block}]")
+            if not actions:
+                return completion_response.content[0].text, completion_response
             else:
-                action_request = self.action_type.from_response(
-                    completion_response, mode=instructor.Mode.ANTHROPIC_TOOLS
-                )
+                for block in completion_response.content:
+                    if isinstance(block, ToolUseBlock):
+                        action = None
+                        for action in actions:
+                            if action.name == block.name:
+                                action = action
+                                break
+
+                        if not action:
+                            raise ValueError(f"Unknown action {block.name}")
+
+                        action_args = action.model_validate(block.input)
+
+                        # TODO: We only support one action at the moment
+                        return action_args, completion_response
+
+                    else:
+                        logger.warning(f"Unexpected block {block}]")
 
         except Exception as e:
             logger.exception(
                 f"Failed to parse action request from completion response. Completion: {completion_response}"
             )
             raise e
-
-        return action_request, completion_response
 
     def _map_completion_messages(self, messages: list[Message]) -> list[dict]:
         tool_call_id = None
@@ -786,6 +636,20 @@ class CompletionModel(BaseModel):
             return tool_call.function.name, tool_dict
 
         return None
+
+    def model_dump(self, **kwargs):
+        dump = super().model_dump(**kwargs)
+        if "model_api_key" in dump:
+            dump["model_api_key"] = None
+        if "response_format" in dump:
+            dump["response_format"] = dump["response_format"].value
+        return dump
+
+    @classmethod
+    def model_validate(cls, obj):
+        if isinstance(obj, dict) and "response_format" in obj:
+            obj["response_format"] = LLMResponseFormat(obj["response_format"])
+        return super().model_validate(obj)
 
 
 def generate_call_id():
