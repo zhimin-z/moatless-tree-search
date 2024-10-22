@@ -1,6 +1,6 @@
 python ./moatless/benchmark/run_evaluation.py \
         --model "gpt-4o-mini-2024-07-18" \
-        --repo_base_dir "./repos" \
+        --repo_base_dir "/share/edc/home/antonis/_swe-planner/moatless-tree-search/repos" \
         --eval_dir "./evaluations" \
         --eval_name debug/discriminators/debug_discriminator_1 \
         --temp 0.7 \
