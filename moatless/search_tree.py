@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 
 from moatless.agent.agent import Agent
 from moatless.completion.model import Usage
-from moatless.discriminators import MeanAwardDiscriminator
+from moatless.discriminator import MeanAwardDiscriminator
 from moatless.feedback import FeedbackGenerator
 from moatless.file_context import FileContext
 from moatless.index.code_index import CodeIndex
