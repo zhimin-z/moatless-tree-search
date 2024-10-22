@@ -164,6 +164,7 @@ Pipfile
 
 
 ## CUSTOM
+**/.history
 
 # **/evaluations
 **/.vscode
