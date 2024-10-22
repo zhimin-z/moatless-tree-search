@@ -1,124 +1,186 @@
 import json
 import logging
-from typing import List, Optional, Dict, Any
+from typing import Optional, Dict, Any, List
+
+from pydantic import BaseModel, Field
 
 from moatless.agent.agent import Agent
-
-from moatless.completion import Usage
+from moatless.completion.model import Usage
 from moatless.discriminators import MeanAwardDiscriminator
 from moatless.feedback import FeedbackGenerator
+from moatless.file_context import FileContext
+from moatless.index.code_index import CodeIndex
 from moatless.node import Node, generate_ascii_tree
+from moatless.repository.repository import Repository
 from moatless.selector import BestFirstSelector, Selector, SoftmaxSelector
-from moatless.settings import TreeSearchSettings
 from moatless.value_function import ValueFunction
-from moatless.workspace import Workspace
+from moatless.runtime.runtime import RuntimeEnvironment
 
 logger = logging.getLogger(__name__)
 
 
-class SearchTree:
-    def __init__(
-        self,
-        message: str | None = None,
-        root: Node | None = None,
-        workspace: Workspace | None = None,
-        settings: TreeSearchSettings | None = None,
-        selector: Selector | None = None,
-        agent: Agent | None = None,
-        value_function: ValueFunction | None = None,
-        feedback_generator: FeedbackGenerator | None = None,
-        discriminator: MeanAwardDiscriminator | None = None,
-        metadata: Dict[str, Any] | None = None,
-        persist_path: str | None = None,
-    ):
-        """
-        Initialize a SearchTree instance.
+class SearchTree(BaseModel):
+    root: Node = Field(..., description="The root node of the search tree.")
+    selector: Selector = Field(..., description="Selector for node selection.")
+    agent: Agent = Field(..., description="Agent for generating actions.")
+    value_function: Optional[ValueFunction] = Field(
+        None, description="Value function for reward calculation."
+    )
+    feedback_generator: Optional[FeedbackGenerator] = Field(
+        None, description="Feedback generator."
+    )
+    discriminator: Optional[MeanAwardDiscriminator] = Field(
+        None, description="Discriminator for selecting the best trajectory."
+    )
+    metadata: Dict[str, Any] = Field(
+        default_factory=dict, description="Additional metadata for the search tree."
+    )
+    persist_path: Optional[str] = Field(
+        None, description="Path to persist the search tree."
+    )
+    unique_id: int = Field(default=0, description="Unique ID counter for nodes.")
 
-        Args:
-            message (str | None): The incoming request message from the user.
-            root (Node | None): The root node of an existing search tree. If not provided, a new root node will be created.
-            workspace (Workspace | None): The workspace for file operations.
-            settings (TreeSearchSettings | None): Settings for the tree search algorithm.
-            selector (Selector | None): Custom selector for node selection.
-            agent (Agent | None): Custom agent for generating actions.
-            value_function (ValueFunction | None): Custom value function for reward calculation.
-            feedback_generator (FeedbackGenerator | None): Custom feedback generator.
-            discriminator (MeanAwardDiscriminator | None): Custom discriminator for selecting the best trajectory.
-            metadata (Dict[str, Any] | None): Additional metadata for the search tree.
-            persist_path (str | None): Path to persist the search tree.
+    max_expansions: int = Field(
+        1, description="The maximum number of expansions of one state."
+    )
+    max_iterations: int = Field(
+        10, description="The maximum number of iterations to run the tree search."
+    )
+    max_cost: Optional[float] = Field(
+        None, description="The maximum cost spent on token before finishing."
+    )
+    min_finished_nodes: Optional[int] = Field(
+        None,
+        description="The minimum number of finished nodes to consider before finishing",
+    )
+    reward_threshold: Optional[float] = Field(
+        None, description="The min reward threshold to consider before finishing."
+    )
+    max_depth: int = Field(
+        10, description="The maximum depth for one trajectory in simulations."
+    )
 
-        Raises:
-            ValueError: If neither root nor message is provided.
-        """
+    class Config:
+        arbitrary_types_allowed = True
+
+    @classmethod
+    def create(
+        cls,
+        message: Optional[str] = None,
+        root: Optional[Node] = None,
+        file_context: Optional[FileContext] = None,
+        selector: Optional[Selector] = None,
+        agent: Optional[Agent] = None,
+        value_function: Optional[ValueFunction] = None,
+        feedback_generator: Optional[FeedbackGenerator] = None,
+        discriminator: Optional[MeanAwardDiscriminator] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        persist_path: Optional[str] = None,
+        max_expansions: int = 1,
+        max_iterations: int = 10,
+        max_cost: Optional[float] = None,
+        min_finished_nodes: Optional[int] = None,
+        reward_threshold: Optional[float] = None,
+        max_depth: int = 10,
+    ) -> "SearchTree":
         if not root and not message:
             raise ValueError("Either a root node or a message must be provided.")
 
-        if root:
-            self.root = root
-        else:
-            self.root = Node(
+        if not root:
+            root = Node(
                 node_id=0,
-                max_expansions=settings.max_expansions,
+                max_expansions=max_expansions,
                 message=message,
-                file_context=workspace.create_file_context() if workspace else None,
+                file_context=file_context,
             )
-        self.unique_id = 0
-        self.settings = settings or TreeSearchSettings()
-        self.workspace = workspace
-        self.metadata = metadata
 
-        if selector:
-            self.selector = selector
-        elif settings.best_first:
-            self.selector = BestFirstSelector()
-        else:
-            self.selector = SoftmaxSelector()
+        selector = selector or BestFirstSelector()
 
-        self.agent = agent or Agent(
-            workspace=self.workspace, model_settings=settings.agent_model
+        return cls(
+            root=root,
+            selector=selector,
+            agent=agent,
+            value_function=value_function,
+            feedback_generator=feedback_generator,
+            discriminator=discriminator or MeanAwardDiscriminator(),
+            metadata=metadata or {},
+            persist_path=persist_path,
+            max_expansions=max_expansions,
+            max_iterations=max_iterations,
+            max_cost=max_cost,
+            min_finished_nodes=min_finished_nodes,
+            reward_threshold=reward_threshold,
+            max_depth=max_depth,
         )
 
-        self.value_function = value_function
+    @classmethod
+    def model_validate(cls, obj: Any, repository: Repository | None = None):
+        if isinstance(obj, dict):
+            obj = obj.copy()
 
-        self.feedback_generator = feedback_generator or FeedbackGenerator()
-        self.discriminator = discriminator or MeanAwardDiscriminator()
+            if "selector" in obj and isinstance(obj["selector"], dict):
+                selector_type = obj["selector"].get("type")
+                if selector_type == "BestFirstSelector":
+                    obj["selector"] = BestFirstSelector.model_validate(obj["selector"])
+                elif selector_type == "SoftmaxSelector":
+                    obj["selector"] = SoftmaxSelector.model_validate(obj["selector"])
+                else:
+                    raise ValueError(f"Unknown selector type: {selector_type}")
 
-        self.persist_path = persist_path
+            if "agent" in obj and isinstance(obj["agent"], dict):
+                obj["agent"] = Agent.model_validate(obj["agent"])
+
+            if "value_function" in obj and isinstance(obj["value_function"], dict):
+                obj["value_function"] = ValueFunction.model_validate(
+                    obj["value_function"]
+                )
+
+            if "feedback_generator" in obj and isinstance(
+                obj["feedback_generator"], dict
+            ):
+                obj["feedback_generator"] = FeedbackGenerator.model_validate(
+                    obj["feedback_generator"]
+                )
+
+            if "discriminator" in obj and isinstance(obj["discriminator"], dict):
+                obj["discriminator"] = MeanAwardDiscriminator.model_validate(
+                    obj["discriminator"]
+                )
+
+            if "root" in obj and isinstance(obj["root"], dict):
+                obj["root"] = Node.reconstruct(obj["root"], repo=repository)
+
+        return super().model_validate(obj)
 
     @classmethod
     def from_dict(
         cls,
-        dict: Dict[str, Any],
-        workspace: Workspace | None = None,
+        data: Dict[str, Any],
         persist_path: str | None = None,
+        repository: Repository | None = None,
+        code_index: CodeIndex | None = None,
+        runtime: RuntimeEnvironment | None = None,
     ) -> "SearchTree":
-        settings = TreeSearchSettings(**dict["settings"])
-        root = Node.reconstruct(
-            dict["tree"], repo=workspace.file_repo if workspace else None
-        )
-        tree = cls(
-            root=root,
-            workspace=workspace,
-            settings=settings,
-            metadata=dict.get("metadata"),
-            persist_path=persist_path,
-        )
-        tree.unique_id = len(tree.root.get_all_nodes())
-        return tree
+        data = data.copy()
+        if persist_path:
+            data["persist_path"] = persist_path
+
+        if "agent" in data and isinstance(data["agent"], dict):
+            agent_data = data["agent"]
+            data["agent"] = Agent.model_validate(agent_data, repository=repository, code_index=code_index, runtime=runtime)
+        return cls.model_validate(data, repository)
 
     @classmethod
     def from_file(
         cls,
         file_path: str,
-        workspace: Workspace | None = None,
         persist_path: str | None = None,
+        **kwargs
     ) -> "SearchTree":
         with open(file_path, "r") as f:
             tree_data = json.load(f)
 
-        return cls.from_dict(
-            tree_data, workspace=workspace, persist_path=persist_path or file_path
-        )
+        return cls.from_dict(tree_data, persist_path=persist_path or file_path, **kwargs)
 
     def run_search(self) -> Node | None:
         """Run the MCTS algorithm for a specified number of iterations."""
@@ -159,37 +221,34 @@ class SearchTree:
         """Select a node for expansion using the UCT algorithm."""
         expandable_nodes = node.get_expandable_descendants()
 
-        filtered_nodes = []
-        for node in expandable_nodes:
-            if node.get_depth() >= self.settings.max_depth:
-                continue
+        filtered_nodes = [n for n in expandable_nodes if n.get_depth() < self.max_depth]
 
-            filtered_nodes.append(node)
-
-        expandable_nodes = filtered_nodes
-
-        if not expandable_nodes:
+        if not filtered_nodes:
             logger.info("No expandable nodes found.")
             return None
 
-        return self.selector.select(expandable_nodes)
+        return self.selector.select(filtered_nodes)
 
     def _expand(self, node: Node) -> Node:
         """Expand the node by returning an unexecuted child or adding a new child node."""
         # Check for unexecuted children
         for child in node.children:
-            if not child.is_duplicate and child.output is None:
+            if not child.is_duplicate and child.observation is None:
                 logger.info(
                     f"Returning unexecuted child Node{child.node_id} of Node{node.node_id}"
                 )
                 return child
 
-        feedback = self.feedback_generator.generate_feedback(node)
+        if self.feedback_generator:
+            feedback = self.feedback_generator.generate_feedback(node)
+        else:
+            feedback = None
+
         child_node = Node(
             node_id=self._generate_unique_id(),
             parent=node,
             file_context=node.file_context.clone() if node.file_context else None,
-            max_expansions=self.settings.max_expansions,
+            max_expansions=self.max_expansions,
             feedback=feedback,
         )
         node.add_child(child_node)
@@ -200,37 +259,7 @@ class SearchTree:
         """Simulate a playout by executing the action and evaluating the result."""
 
         if not node.action:
-            action, completion_response = self.agent.generate_action(node)
-            node.action = action
-
-            if completion_response:
-                node.completions["build_action"] = completion_response
-
-            duplicate_node = node.find_duplicate()
-            if duplicate_node:
-                logger.info(
-                    f"Node{node.node_id} is a duplicate to Node{duplicate_node.node_id}. Skipping execution."
-                )
-                node.is_duplicate = True
-                return
-        else:
-            # To set workspace on saved but not executed actions
-            node.action.set_workspace(self.workspace)
-
-        output = node.action.execute(node.file_context)
-
-        # TODO: Return completion_response from execute instead?
-        if output.execution_completion:
-            node.completions["execute_action"] = output.execution_completion
-            output.execution_completion = None
-
-        node.output = output
-        node.message = output.message
-        logger.info(
-            f"Node{node.node_id}: Executed action: {node.action.action_name}. "
-            f"Terminal: {node.output.terminal}. "
-            f"Output: {node.output.message}"
-        )
+            self.agent.run(node)
 
         if self.value_function:
             node.reward, completion_response = self.value_function.get_reward(node=node)
@@ -270,22 +299,18 @@ class SearchTree:
         return self.discriminator.select(nodes)
 
     def is_finished(self):
-        if len(self.root.get_all_nodes()) >= self.settings.max_iterations:
+        if len(self.root.get_all_nodes()) >= self.max_iterations:
             return True
 
         finished_nodes = self.get_finished_nodes()
 
-        # Expect at least one finished node with reward above threshold
-        if self.settings.reward_threshold and not any(
-            node.reward and node.reward.value >= self.settings.reward_threshold
+        if self.reward_threshold and not any(
+            node.reward and node.reward.value >= self.reward_threshold
             for node in finished_nodes
         ):
             return False
 
-        if (
-            self.settings.min_finished_nodes
-            and len(self.get_finished_nodes()) >= self.settings.min_finished_nodes
-        ):
+        if self.min_finished_nodes and len(finished_nodes) >= self.min_finished_nodes:
             return True
 
         if not self.root.get_expandable_descendants():
@@ -348,11 +373,40 @@ class SearchTree:
         Returns:
             Dict[str, Any]: A dictionary representation of the search tree.
         """
-        return {
-            "settings": self.settings.model_dump(**kwargs),
-            "tree": self.root.model_dump(**kwargs),
-            "metadata": self.metadata,
+        # Get all fields except the ones we'll handle separately
+        data = {
+            field: getattr(self, field)
+            for field in self.model_fields
+            if field
+            not in [
+                "root",
+                "selector",
+                "agent",
+                "value_function",
+                "feedback_generator",
+                "discriminator",
+                "persist_path",
+            ]
         }
+
+        # Remove persist_path if it exists
+        data.pop("persist_path", None)
+
+        # Add selector, agent, value_function, feedback_generator, and discriminator
+        data["selector"] = self.selector.model_dump(**kwargs)
+        data["agent"] = self.agent.model_dump(**kwargs)
+
+        if self.value_function:
+            data["value_function"] = self.value_function.model_dump(**kwargs)
+        if self.feedback_generator:
+            data["feedback_generator"] = self.feedback_generator.model_dump(**kwargs)
+        if self.discriminator:
+            data["discriminator"] = self.discriminator.model_dump(**kwargs)
+
+        # Add root last
+        data["root"] = self.root.model_dump(**kwargs)
+
+        return data
 
 
 def find_best_by_mean_award(finished_nodes: List[Node]) -> Node | None:
