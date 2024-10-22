@@ -1,0 +1,12 @@
+python ./moatless/benchmark/run_evaluation.py \
+        --model "gpt-4o-mini-2024-07-18" \
+        --repo_base_dir "./repos" \
+        --eval_dir "./evaluations" \
+        --eval_name debug/discriminators/debug_discriminator_1 \
+        --temp 0.7 \
+        --num_workers 1 \
+        --mcts \
+        --feedback \
+        --instance_id django__django-15252 \
+        --max_iterations 100 \
+        --max_expansions 5
