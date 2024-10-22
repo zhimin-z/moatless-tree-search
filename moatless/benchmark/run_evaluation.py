@@ -3,6 +3,7 @@ import logging
 import os
 from datetime import datetime
 from typing import Optional
+from pathlib import Path
 
 from dotenv import load_dotenv
 
@@ -65,7 +66,6 @@ def evaluate_search_and_code(
     logger.info(f"  Max Expansions: {tree_search_settings.max_expansions}")
     logger.info(f"  Max Iterations: {tree_search_settings.max_iterations}")
     logger.info(f"  Min Finished Nodes: {tree_search_settings.min_finished_nodes}")
-    logger.info(f"  States to Explore: {tree_search_settings.states_to_explore}")
     logger.info(f"  Provide Feedback: {tree_search_settings.provide_feedback}")
     logger.info(f"  Debate: {tree_search_settings.debate}")
     if tree_search_settings.value_function_model:
@@ -102,6 +102,12 @@ def evaluate_search_and_code(
     )
 
     return os.path.join(evaluations_dir, evaluation_name)
+
+
+# Create a function to ensure the directory exists
+def ensure_dir(file_path):
+    directory = os.path.dirname(file_path)
+    Path(directory).mkdir(parents=True, exist_ok=True)
 
 
 if __name__ == "__main__":
@@ -144,35 +150,46 @@ if __name__ == "__main__":
         log_filename = f"run_evaluation_{current_time}.log"
         error_log_filename = f"run_evaluation_{current_time}_error.log"
 
+    # Ensure the directory for log files exists
+    log_dir = os.path.join(args.eval_dir, "logs")
+    ensure_dir(os.path.join(log_dir, log_filename))
+    ensure_dir(os.path.join(log_dir, error_log_filename))
+
     # Create a logger
     logger = logging.getLogger()
     logger.setLevel(logging.INFO)
 
     # Create file handler which logs even debug messages
-    file_handler = logging.FileHandler(log_filename)
-    file_handler.setLevel(logging.INFO)
-    file_formatter = logging.Formatter(
-        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-    )
-    file_handler.setFormatter(file_formatter)
+    try:
+        file_handler = logging.FileHandler(os.path.join(log_dir, log_filename))
+        file_handler.setLevel(logging.INFO)
+        file_formatter = logging.Formatter(
+            "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+        )
+        file_handler.setFormatter(file_formatter)
+        logger.addHandler(file_handler)
+    except Exception as e:
+        print(f"Error creating file handler for logging: {e}")
+        print("Continuing without file logging...")
 
     # Create error file handler which logs error messages
-    error_file_handler = logging.FileHandler(error_log_filename)
-    error_file_handler.setLevel(logging.ERROR)
-    error_file_formatter = logging.Formatter(
-        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-    )
-    error_file_handler.setFormatter(error_file_formatter)
+    try:
+        error_file_handler = logging.FileHandler(os.path.join(log_dir, error_log_filename))
+        error_file_handler.setLevel(logging.ERROR)
+        error_file_formatter = logging.Formatter(
+            "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+        )
+        error_file_handler.setFormatter(error_file_formatter)
+        logger.addHandler(error_file_handler)
+    except Exception as e:
+        print(f"Error creating error file handler for logging: {e}")
+        print("Continuing without error file logging...")
 
     # Create console handler with a higher log level
     console_handler = logging.StreamHandler()
     console_handler.setLevel(logging.WARN)
     console_formatter = logging.Formatter("%(levelname)s - %(message)s")
     console_handler.setFormatter(console_formatter)
-
-    # Add the handlers to the logger
-    logger.addHandler(file_handler)
-    logger.addHandler(error_file_handler)
     logger.addHandler(console_handler)
 
     # Adjust log levels for specific loggers
@@ -185,17 +202,19 @@ if __name__ == "__main__":
 
     load_dotenv()
 
+    # Create ModelSettings instance
+    model_settings = ModelSettings(model=args.model, temperature=args.temp)
+
     tree_search_settings = TreeSearchSettings(
         max_expansions=args.max_expansions,
         max_iterations=args.max_iterations,
         min_finished_transitions=3,
         max_finished_transitions=5,
         reward_threshold=args.reward_threshold,
-        states_to_explore=["SearchCode", "PlanToCode"],
         provide_feedback=args.feedback,
         debate=args.debate,
         best_first=True,
-        value_function_model=args.model,
+        value_function_model=model_settings,
         value_function_model_temperature=0.0,
     )
 
