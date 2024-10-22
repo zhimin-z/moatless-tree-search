@@ -1,3 +1,4 @@
+import os
 import collections
 from typing import List, Callable, Tuple
 import json
@@ -6,11 +7,11 @@ from tqdm import tqdm
 from instructor import OpenAISchema
 from litellm import token_counter
 
-from utils.misc import save_to_json
-from completion import CompletionModel, Completion, UserMessage, Message
+from moatless.utils.misc import save_to_json
+from moatless.completion.completion import CompletionModel, LLMResponseFormat
+from moatless.completion.model import Completion, Message, UserMessage
 
 from pydantic import Field
-from moatless.settings import LLMResponseFormat
 
 import logging
 logger = logging.getLogger(__name__)
@@ -87,7 +88,7 @@ class MultiAgentDebate:
                     actions=[output_format]
                 )
 
-                assistant_message = self.format_assistant_message(action_request, completion)
+                assistant_message = self.format_agent_message(action_request, completion)
                 agent_context.append(assistant_message)
 
                 round_log["agent_responses"].append({
@@ -102,7 +103,7 @@ class MultiAgentDebate:
         debate_log["summary"] = debate_summary
 
         if self.include_conclusion:
-            final_action, final_completion, final_messages = self.generate_conclusion(
+            final_action, final_completion, conclusion_dict = self.generate_conclusion(
                 messages[-1].content,
                 debate_summary,
                 messages,
@@ -110,13 +111,18 @@ class MultiAgentDebate:
                 output_format
             )
         else:
-            final_action, final_completion, final_messages = None, None, messages
+            final_action, final_completion, conclusion_dict = None, None, messages
 
-        debate_log["conclusion"] = final_completion.choices[0].message
-        
+        if conclusion_dict:
+            debate_log["conclusion"] = conclusion_dict
+        elif isinstance(final_completion, dict) and 'choices' in final_completion:
+            debate_log["conclusion"] = final_completion['choices'][0]['message']
+        else:
+            debate_log["conclusion"] = "No conclusion available"        
+            
         # Calculate token usage
         prompt_tokens = token_counter(text=str(debate_log["messages"]))
-        completion_tokens = token_counter(text=str(final_messages) if final_messages else " ")
+        completion_tokens = token_counter(text=str(conclusion_dict) if conclusion_dict else " ")
         total_tokens = prompt_tokens + completion_tokens
 
         if not node_id:
@@ -127,7 +133,7 @@ class MultiAgentDebate:
             logger.info(f"Saving debate log to {self.debate_log_dir}")
             save_to_json(self.debates, self.debate_log_dir)
 
-        return final_action, final_completion, final_messages
+        return final_action, final_completion, conclusion_dict
 
     def construct_debate_message(self, agents, idx):
         prefix_string = "These are the solutions to the problem from other agents: "
@@ -172,13 +178,27 @@ class MultiAgentDebate:
             actions=[output_format]
         )
 
-        return action_request, completion, completion.choices[0].message.content
+        if isinstance(completion, dict) and 'choices' in completion:
+            choice = completion['choices'][0]
+            if 'message' in choice and 'tool_calls' in choice['message']:
+                tool_call = choice['message']['tool_calls'][0]
+                if 'function' in tool_call and 'parsed_arguments' in tool_call['function']:
+                    parsed_args = tool_call['function']['parsed_arguments']
+                    conclusion = output_format(**parsed_args)
+                    return action_request, completion, conclusion
 
-    def format_assistant_message(self, action_request, completion):
+        # Fallback if the expected structure is not found
+        return action_request, completion, None
+
+    def format_agent_message(self, action_request, completion):
         if action_request:
-            return Message(role="assistant", content=json.dumps(action_request.dict()))
+            content = json.dumps({
+                "action_request": action_request.__class__.__name__,
+                "arguments": action_request.dict()
+            })
+            return Message(role="user", content=content)
         elif completion.choices and completion.choices[0].message:
-            return Message(role="assistant", content=completion.choices[0].message.content)
+            return Message(role="user", content=completion.choices[0].message.content)
         else:
             return None
 
@@ -190,20 +210,33 @@ class MultiAgentDebate:
 
 
 if __name__ == "__main__":
+    # setup your desired output format
+    class NameConclusion(OpenAISchema):
+        explanation: str = Field(description="2-3 sentences explaining the the reasoning in your decision.")
+        conclusion: str = Field(description="The name you think is the best")
+
     model = "openai/Qwen/Qwen2.5-72B-Instruct"
+    # model = "gpt-4o-mini"
     system_message = "You are a highly capable AI assistant tasked with synthesizing information and reaching conclusions."
     prompt = "What should we name you guys? Be creative and funny, and mysterious."
 
-    class NameSuggestion(ValueFunctionDebateConclusion):
-        name: str = Field(description="The name you think is the best.")
 
-    # Create ModelCompletion instance
-    model_completion = CompletionModel(
-        model=model,
-        temperature=1.0,
-        max_tokens=1000,
-        response_format=LLMResponseFormat.JSON
-    )
+    # Prepare common parameters for CompletionModel
+    common_params = {
+        'model': model,
+        'temperature': 1.0,
+        'max_tokens': 1000,
+        'response_format': LLMResponseFormat.JSON
+    }
+
+    # Add CUSTOM_LLM_API_KEY if it exists and the model starts with "openai"
+    if os.getenv('CUSTOM_LLM_API_KEY') and model.startswith("openai"):
+        print(f"Using custom API key for model: {model}")
+        common_params['model_api_key'] = os.getenv('CUSTOM_LLM_API_KEY', None)
+        common_params['model_base_url'] = os.getenv('CUSTOM_LLM_API_BASE', None)
+
+    # Create ModelCompletion instance with the updated parameters
+    model_completion = CompletionModel(**common_params)
 
     # Prepare messages
     messages = [
@@ -212,35 +245,14 @@ if __name__ == "__main__":
     ]
 
     # Create MultiAgentDebate instance
-    debate = MultiAgentDebate(n_agents=8, n_rounds=3)
+    debate = MultiAgentDebate(n_agents=2, n_rounds=2)
 
     # Conduct the debate
     final_action, final_completion, final_messages = debate.conduct_debate(
         messages=messages,
         create_completion=model_completion.create_completion,
-        output_format=NameSuggestion,
+        output_format=NameConclusion,
     )
 
-    # Generate conclusion
-    conclusion_prompt = f"Based on the debate, summarize all the names and choose the best one according to the arguments made. Debate summary: {final_messages}"
-    conclusion_messages = [
-        Message(role="system", content=system_message),
-        UserMessage(content=conclusion_prompt)
-    ]
-
-    conclusion_action, conclusion_completion = model_completion.create_completion(
-        messages=conclusion_messages,
-        system_prompt=system_message,
-    )
-
-    # Print results
-    print("Debate summary:")
-    for message in final_messages:
-        if isinstance(message, UserMessage):
-            print(f"User: {message.content}")
-        else:
-            print(f"{message.role.capitalize()}: {message.content}")
-
-    print("\nConclusion:")
-    print(f"Best name: {conclusion_action.best_name}")
-    print(f"Summary: {conclusion_action.summary}")
+    print(final_action.explanation)
+    print(final_action.conclusion)
