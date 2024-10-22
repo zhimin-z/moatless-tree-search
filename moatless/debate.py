@@ -9,8 +9,30 @@ from litellm import token_counter
 from utils.misc import save_to_json
 from completion import CompletionModel, Completion, UserMessage, Message
 
+from pydantic import Field
+from moatless.settings import LLMResponseFormat
+
 import logging
 logger = logging.getLogger(__name__)
+
+CONCLUSION_PROMPT = """Based on the initial problem context and the answers from the debate of the other agents, construct an optimal answer.
+Consider the different perspectives presented by the agents and the context provided in order to reach the correct conclusion.
+Do not refer to the participants, but rather just report your recommendations as if they were your own.
+Strictly adhere to any output format used in the Agent responses, and especially any tool/api/function calls if present, like those enclosed for example those enclosed in angle brackets i.e <tool_call> or **value**.
+"""
+
+VALUE_OUTPUT_FORMAT = """OUTPUT FORMAT:
+
+<Explanation>: 2-3 sentences explaining the the reasoning in your decision, alluding to the *common mistakes* where appropriate.
+<Reward>: integer reward (range: -100 to 100)."""
+
+class ValueFunctionDebateConclusion(OpenAISchema):
+    explanation: str = Field(
+        description="2-3 sentences explaining the the reasoning in your decision, alluding to the *common mistakes* where appropriate."
+    )
+    reward: int = Field(
+        description="integer reward (range: -100 to 100)."
+    )
 
 class MultiAgentDebate:
     def __init__(self, n_agents=8, n_rounds=3, **kwargs):
@@ -171,6 +193,9 @@ if __name__ == "__main__":
     model = "openai/Qwen/Qwen2.5-72B-Instruct"
     system_message = "You are a highly capable AI assistant tasked with synthesizing information and reaching conclusions."
     prompt = "What should we name you guys? Be creative and funny, and mysterious."
+
+    class NameSuggestion(ValueFunctionDebateConclusion):
+        name: str = Field(description="The name you think is the best.")
 
     # Create ModelCompletion instance
     model_completion = CompletionModel(
