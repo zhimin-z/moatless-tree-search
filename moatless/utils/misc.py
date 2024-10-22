@@ -1,4 +1,8 @@
+import logging
 import os
+
+logger = logging.getLogger(__name__)
+
 
 def save_to_json(files, filename):
     # Get the absolute path of the file
@@ -11,6 +15,7 @@ def save_to_json(files, filename):
                 import json5
                 json5.dump(files, f, indent=2, quote_keys=True, trailing_commas=False)
             except ImportError:
+                import json
                 json.dump(files, f, indent=2, ensure_ascii=False)
 
         logger.info(f"LLM output saved to {full_path}")
