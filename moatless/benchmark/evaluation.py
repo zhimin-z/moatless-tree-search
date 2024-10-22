@@ -27,7 +27,7 @@ from moatless.benchmark.swebench import (
 )
 from moatless.benchmark.utils import get_moatless_instance
 from moatless.completion.completion import CompletionModel, LLMResponseFormat
-from moatless.discriminators import MeanAwardDiscriminator
+from moatless.discriminator import MeanAwardDiscriminator, AgentDiscriminator
 from moatless.feedback import FeedbackGenerator
 from moatless.search_tree import SearchTree
 from moatless.selector import BestFirstSelector, SoftmaxSelector
@@ -126,6 +126,15 @@ class TreeSearchSettings(BaseModel):
         description="The maximum depth for one trajectory in simulations.",
     )
 
+class DebateSettings(BaseModel):
+    n_agents: int = Field(
+        8,
+        description="The number of agents to debate the rewards to transitions.",
+    )   
+    n_rounds: int = Field(
+        3,
+        description="The number of rounds to debate the rewards to transitions.",
+    )
 
 
 class Evaluation:
@@ -352,7 +361,15 @@ class Evaluation:
                         completion=self._create_completion_model(self.settings.value_function_model)
                     )
                     feedback = FeedbackGenerator()
-                    discriminator = MeanAwardDiscriminator()
+                    # discriminator = MeanAwardDiscriminator()
+                    discriminator = AgentDiscriminator(
+                        create_completion=self._create_completion_model(),
+                        debate=self.settings.debate,
+                        debate_settings=DebateSettings(
+                            n_agents=self.settings.debate_settings.n_agents,
+                            n_rounds=self.settings.debate_settings.n_rounds,
+                        )
+                    )
 
                     search_tree = SearchTree(
                         message=problem_statement,
