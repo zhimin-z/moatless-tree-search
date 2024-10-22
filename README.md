@@ -1,3 +1,15 @@
+# SWE-search
+
+
+[📜 Paper](https://arxiv.org/abs/2311.00136) | [📄 Project Page](https://a-antoniades.github.io/Neuroformer_web/)
+
+
+<a href="assets/method.pdf" target="_blank">
+  <img src="./assets/method.png" alt="Method Diagram" width="100%">
+</a>
+
+
+
 ## Description of the Flow
 The search algorithm operates in a loop, following these main steps to explore and evaluate possible actions:
 
@@ -51,10 +63,10 @@ class Selector(ABC):
         pass
 ```
 
-### Agent
+### ActionAgent
 
 ```python
-class Agent:
+class ActionAgent:
    
     def generate_action(self, node: Node) -> Action:
         """
