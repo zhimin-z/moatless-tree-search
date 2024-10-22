@@ -6,7 +6,6 @@ from instructor import OpenAISchema
 from pydantic import Field, BaseModel
 
 from moatless.node import Node
-from moatless.trajectory import Trajectory, TrajectoryState
 from moatless.completion.model import Completion, Message, UserMessage
 from moatless.debate import MultiAgentDebate
 
@@ -68,26 +67,25 @@ class AgentDiscriminator(Discriminator):
     def select(self, nodes: List[Node]) -> Node | None:
         best_finish_node: Node | None = None
         best_resolved_status = False
-        trajectories_results = []
+        nodes_results = []
 
         for finished_node in nodes:
-            trajectory = finished_node.trajectory
-            transition = self.compare_solutions_v2(trajectory)
+            comparison_result = self.compare_solutions_v2(finished_node)
 
-            if transition:
-                resolved_status = transition.state.output.get("evaluation_result", {}).get("resolved", False)
-                status_details = f"Status: {transition.state.output.get('evaluation_result', {}).get('tests_status', {}).get('status', 'Unknown')}"
+            if comparison_result:
+                resolved_status = comparison_result.observation.extra.get("evaluation_result", {}).get("resolved", False)
+                status_details = f"Status: {comparison_result.observation.extra.get('evaluation_result', {}).get('tests_status', {}).get('status', 'Unknown')}"
             else:
                 resolved_status = False
-                status_details = "No valid transition found"
+                status_details = "No valid comparison result found"
 
-            trajectories_results.append((finished_node.node_id, resolved_status, status_details))
+            nodes_results.append((finished_node.node_id, resolved_status, status_details))
 
             if resolved_status and (not best_resolved_status or finished_node.calculate_mean_reward() > best_finish_node.calculate_mean_reward()):
                 best_resolved_status = True
                 best_finish_node = finished_node
 
-        logger.info(f"Discriminator results for finished trajectories: {trajectories_results}")
+        logger.info(f"Discriminator results for finished nodes: {nodes_results}")
 
         if best_finish_node:
             logger.info(
@@ -130,55 +128,54 @@ Your task is to carefully evaluate each change and decide which one is the most 
 
         return response.ID, response.EXPLANATION
     
-    def compare_solutions_v2(self, trajectory: Trajectory, include_history: bool = False, 
-                           show_reward: bool = True, debate: bool = False) -> TrajectoryState | None:
-        finished_solutions = [
-            transition
-            for transition in trajectory.transitions
-            if transition.state.name == "Finished" and
-               transition.snapshot["repository"] and
-               transition.snapshot["repository"].get("patch")
+    def compare_solutions_v2(self, node: Node, include_history: bool = False, 
+                             show_reward: bool = True, debate: bool = False) -> Node | None:
+        finished_nodes = [
+            n for n in node.get_trajectory()
+            if n.action.name == "Finish" and
+               n.file_context and
+               n.file_context.generate_git_patch()
         ]
 
-        if len(finished_solutions) == 0:
+        if len(finished_nodes) == 0:
             logger.warning(f"No finished solutions found")
             return None
-        elif len(finished_solutions) == 1:
-            return finished_solutions[0]
+        elif len(finished_nodes) == 1:
+            return finished_nodes[0]
         else:
-            solutions = self.create_message_compare_solutions(finished_solutions, include_history, show_reward)
-            state_id, explanation = self.compare_solutions_v1(solutions, trajectory.initial_message, debate=debate)
+            solutions = self.create_message_compare_solutions(finished_nodes, include_history, show_reward)
+            node_id, explanation = self.compare_solutions_v1(solutions, node.get_root().message, debate=debate)
 
-        if not state_id:
-            logger.warning(f"Failed to find a valid state_id, return best_trajectory")
+        if not node_id:
+            logger.warning(f"Failed to find a valid node_id, return best_node")
             return None
 
-        return next((transition for transition in finished_solutions if transition.state.id == state_id), None)
+        return next((n for n in finished_nodes if n.node_id == node_id), None)
 
-    def create_message_compare_solutions(self, finished_solutions, include_history: bool = False, show_reward: bool = False):
-        logger.info(f"Comparing {len(finished_solutions)} solutions.")
+    def create_message_compare_solutions(self, finished_nodes, include_history: bool = False, show_reward: bool = False):
+        logger.info(f"Comparing {len(finished_nodes)} solutions.")
 
         solutions = ""
-        for finished_solution in finished_solutions:
-            solutions += f"\n<Solution id={finished_solution.state.id}>\n"
+        for finished_node in finished_nodes:
+            solutions += f"\n<Solution id={finished_node.node_id}>\n"
 
             if show_reward:
-                visit = next((visit for visit in finished_solution.state.visits if visit.source_state_id == finished_solution.state.id), None)
-                if visit:
-                    solutions += f"<Explanation>{visit.explanation}</Explanation>\n"
-                    solutions += f"<Reward>{visit.value}</Reward>\n"
+                reward = finished_node.reward
+                if reward:
+                    solutions += f"<Explanation>{reward.explanation}</Explanation>\n"
+                    solutions += f"<Reward>{reward.value}</Reward>\n"
 
             if include_history: 
-                state_history = finished_solution.state.get_previous_states()
-                if state_history:
+                node_history = finished_node.get_trajectory()[:-1]  # Exclude the current node
+                if node_history:
                     formatted_history = []
                     counter = 0
 
-                    for previous_state in state_history:
-                        if previous_state.name in ["Analyze", "Implement", "Test"]:  # Replace with actual states to explore
+                    for previous_node in node_history:
+                        if previous_node.action.name in ["Analyze", "Implement", "Test"]:  # Replace with actual action names to explore
                             counter += 1
-                            formatted_state = f"\n# {counter}. Action: {previous_state.action_request.name}\n\n"
-                            formatted_state += previous_state.action_request.to_prompt()
+                            formatted_state = f"\n# {counter}. Action: {previous_node.action.name}\n\n"
+                            formatted_state += previous_node.action.to_prompt()
                             formatted_history.append(formatted_state)
 
                     if formatted_history:
@@ -187,7 +184,7 @@ Your task is to carefully evaluate each change and decide which one is the most 
                         solutions += "\n</history>\n\n"
 
             solutions += "<Patch>"
-            solutions += finished_solution.snapshot["repository"].get("patch")
+            solutions += finished_node.file_context.generate_git_patch()
             solutions += "</Patch>"
 
             solutions += "\n</Solution>\n"
