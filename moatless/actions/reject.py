@@ -1,4 +1,4 @@
-from typing import Type
+from typing import Type, ClassVar
 
 from pydantic import Field
 
@@ -20,7 +20,7 @@ class RejectArgs(ActionArguments):
 
 
 class Reject(Action):
-    args_schema: Type[ActionArguments] = RejectArgs
+    args_schema: ClassVar[Type[ActionArguments]] = RejectArgs
 
     def execute(self, args: RejectArgs, file_context: FileContext | None = None):
         return Observation(message=args.rejection_reason, terminal=True)

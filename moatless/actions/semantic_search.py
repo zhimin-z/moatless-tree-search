@@ -1,4 +1,4 @@
-from typing import Optional, List, Type
+from typing import Optional, List, Type, ClassVar
 
 from pydantic import Field
 
@@ -29,7 +29,7 @@ class SemanticSearchArgs(SearchBaseArgs):
 
 
 class SemanticSearch(SearchBaseAction):
-    args_schema: Type[ActionArguments] = SemanticSearchArgs
+    args_schema: ClassVar[Type[ActionArguments]] = SemanticSearchArgs
 
     def _search(self, args: SemanticSearchArgs) -> SearchCodeResponse:
         return self._code_index.semantic_search(
@@ -51,7 +51,8 @@ class SemanticSearch(SearchBaseAction):
 
         return SearchCodeResponse()
 
-    def get_evaluation_criteria(self, trajectory_length) -> List[str]:
+    @classmethod
+    def get_evaluation_criteria(cls, trajectory_length: int | None = None) -> List[str]:
         criteria = super().get_evaluation_criteria(trajectory_length)
         criteria.extend(
             [

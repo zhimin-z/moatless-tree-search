@@ -25,12 +25,6 @@ st.set_page_config(layout="wide", page_title="Moatless Visualizer", initial_side
 
 container = st.container()
 
-def reset_cache():
-    st.cache_data.clear()
-    st.session_state.root_node = None
-    st.session_state.selected_node_id = None
-    st.info("Cache cleared and session state reset")
-
 def parse_args():
     parser = argparse.ArgumentParser(description="Moatless Visualizer")
     parser.add_argument("--moatless_dir", default=os.getenv("MOATLESS_DIR", "/tmp/moatless"),
@@ -45,46 +39,10 @@ def parse_args():
 
     return args
 
-def get_search_tree(tree_path: str) -> SearchTree:
-    tree = SearchTree.from_file(tree_path, workspace=None)
-    logger.info(f"Loaded search tree from {tree_path} with {len(tree.root.get_all_nodes())} nodes")
-    return tree
-
-def tree_table(directory_path: str):
-    tree_files = [f for f in os.listdir(directory_path) if f.endswith('.json') and f != 'report.json']
-    
-    if not tree_files:
-        st.warning("No tree files found in the selected directory.")
-        return
-
-    data = []
-    for tree_file in tree_files:
-        tree_path = os.path.join(directory_path, tree_file)
-        with open(tree_path, 'r') as f:
-            tree_data = json.load(f)
-        
-        metadata = tree_data.get('metadata', {})
-        instance_id = metadata.get('instance_id', 'Unknown')
-        
-        data.append({
-            "Instance ID": instance_id,
-            "File": tree_file,
-            "Path": tree_path
-        })
-
-    df = pd.DataFrame(data)
-    st.dataframe(df)
-
-    selected_indices = st.multiselect("Select trees to visualize:", df.index, key="tree_select")
-    if selected_indices:
-        selected_tree_path = df.loc[selected_indices[0], "Path"]
-        st.session_state.search_tree = get_search_tree(selected_tree_path).root
-        st.rerun()
 
 if __name__ == "__main__":
     args = parse_args()
     
-    # Check if path is in query params
     if "path" in st.query_params:
         file_path = st.query_params["path"]
     else:
@@ -122,9 +80,3 @@ if __name__ == "__main__":
 
     if not file_path:
         st.info("Please provide a valid file path and click 'Load File' to begin.")
-
-    if st.button("Reset Cache"):
-        reset_cache()
-        # Clear the path from query params
-        st.experimental_set_query_params()
-        st.rerun()

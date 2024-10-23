@@ -3,6 +3,7 @@ import logging
 import os
 from io import BytesIO
 from typing import Optional
+import time
 
 import matplotlib.pyplot as plt
 import networkx as nx
@@ -16,6 +17,9 @@ from moatless.benchmark.utils import get_moatless_instance
 from moatless.node import Node
 from moatless.search_tree import SearchTree
 from moatless.utils.tokenizer import count_tokens
+
+# Add this near the top of the file, after other imports
+from threading import Thread
 
 logger = logging.getLogger(__name__)
 
@@ -162,18 +166,43 @@ def update_visualization(container, search_tree: SearchTree, selected_tree_path:
     else:
         instance = None
 
+    # Initialize session state for step-by-step visualization
+    if 'total_nodes' not in st.session_state:
+        st.session_state.total_nodes = count_total_nodes(search_tree.root)
+    if 'max_node_id' not in st.session_state:
+        st.session_state.max_node_id = st.session_state.total_nodes - 1
+    if 'selected_node_id' not in st.session_state:
+        st.session_state.selected_node_id = st.session_state.total_nodes - 1
+    if 'auto_play' not in st.session_state:
+        st.session_state.auto_play = False
+
+    # Function to get nodes up to the current max_node_id
+    def get_nodes_up_to_id(root_node, max_id):
+        nodes = []
+        def dfs(node):
+            if node.node_id <= max_id:
+                nodes.append(node)
+                for child in node.children:
+                    dfs(child)
+        dfs(root_node)
+        return nodes
+
+
     container.empty()
     with container:
         graph_col, info_col = st.columns([6, 3])
         with graph_col:
+            # Get nodes up to the current max_node_id
+            nodes_to_show = get_nodes_up_to_id(search_tree.root, st.session_state.max_node_id)
             G = build_graph(search_tree.root, eval_result, instance)
+            G_subset = G.subgraph([f"Node{node.node_id}" for node in nodes_to_show])
             pos = nx.nx_agraph.graphviz_layout(G, prog="dot")
 
             selected_transition_ids = []
             # TODO: Add support selected trajectory
 
             # Create a mapping of point indices to node IDs
-            point_to_node_id = {i: node for i, node in enumerate(G.nodes())}
+            point_to_node_id = {i: node for i, node in enumerate(G_subset.nodes())}
 
             # Normalize positions to fit in [0, 1] range
             x_values, y_values = zip(*pos.values())
@@ -191,7 +220,7 @@ def update_visualization(container, search_tree: SearchTree, selected_tree_path:
                 pos[node] = (normalized_x, normalized_y * height_scale)
 
             edge_x, edge_y = [], []
-            for edge in G.edges(data=True):
+            for edge in G_subset.edges():
                 x0, y0 = pos[edge[0]]
                 x1, y1 = pos[edge[1]]
                 edge_x.extend([x0, x1, None])
@@ -203,7 +232,7 @@ def update_visualization(container, search_tree: SearchTree, selected_tree_path:
             node_line_widths = []
             node_line_colors = []
 
-            for node in G.nodes():
+            for node in G_subset.nodes():
                 node_info = G.nodes[node]
                 x, y = pos[node]
                 node_x.append(x)
@@ -379,7 +408,7 @@ def update_visualization(container, search_tree: SearchTree, selected_tree_path:
                 fig.add_trace(badge_trace)
 
             fig.update_layout(
-                title="Trajectory Tree",
+                title="Search Tree",
                 titlefont_size=16,
                 showlegend=False,
                 hovermode="closest",
@@ -389,6 +418,36 @@ def update_visualization(container, search_tree: SearchTree, selected_tree_path:
                 height=600
                 * height_scale,  # Adjust the height based on the number of nodes
             )
+
+            col1, col2, col3, col4, col5, col6 = st.columns(6)
+            with col1:
+                st.button("⏪ Reset to 0", 
+                          on_click=lambda: setattr(st.session_state, 'max_node_id', 0) or setattr(st.session_state, 'selected_node_id', 0),
+                          disabled=(st.session_state.max_node_id == 0 or st.session_state.auto_play))
+            with col2:
+                st.button("◀ Step Back", 
+                          on_click=lambda: setattr(st.session_state, 'max_node_id', st.session_state.max_node_id - 1) or setattr(st.session_state, 'selected_node_id', st.session_state.max_node_id),
+                          disabled=(st.session_state.max_node_id <= 0))
+            with col3:
+                st.button("▶ Step Forward", 
+                          on_click=lambda: setattr(st.session_state, 'max_node_id', st.session_state.max_node_id + 1) or setattr(st.session_state, 'selected_node_id', st.session_state.max_node_id),
+                          disabled=(st.session_state.max_node_id >= st.session_state.total_nodes - 1))
+            with col4:
+                st.button("⏩ Show Full Tree", 
+                          on_click=lambda: setattr(st.session_state, 'max_node_id', st.session_state.total_nodes - 1) or setattr(st.session_state, 'selected_node_id', st.session_state.max_node_id),
+                          disabled=(st.session_state.max_node_id == st.session_state.total_nodes - 1))
+            with col5:
+                if st.session_state.auto_play:
+                    if st.button("⏹ Stop Auto-play"):
+                        st.session_state.auto_play = False
+                else:
+                    if st.button("▶️ Start Auto-play"):
+                        st.session_state.auto_play = True
+                        st.rerun()
+
+            with col6:
+                st.write(f"Showing nodes up to ID: {st.session_state.max_node_id}")
+                st.write("Auto-play: " + ("On" if st.session_state.auto_play else "Off"))
 
             chart_placeholder = st.empty()
             event = chart_placeholder.plotly_chart(
@@ -403,53 +462,52 @@ def update_visualization(container, search_tree: SearchTree, selected_tree_path:
                 if selected_points:
                     point_index = selected_points[0]["point_index"]
                     if point_index in point_to_node_id:
-                        st.session_state.selected_node_id = point_to_node_id[
-                            point_index
-                        ]
+                        node_id = point_to_node_id[point_index]
+                        logger.info(f"Selected node: {node_id} by point index: {point_index}: {point_to_node_id}")
+                        st.session_state.selected_node_id = int(node_id.split("Node")[1])
 
-            focus_node = st.text_input("Focus on node (optional):", "")
-            max_depth = st.number_input(
-                "Max depth from focus node:", min_value=1, value=5
-            )
-            orientation = st.radio("PDF Orientation", ["landscape", "portrait"])
 
-            focus_node = focus_node if focus_node else None
-            generate_pdf = st.button("Generate PDF")
+            # Add a button to toggle PDF settings
+            show_pdf_settings = st.button("Toggle PDF Settings")
+
+            # Use session state to persist the toggle state
+            if "pdf_settings_visible" not in st.session_state:
+                st.session_state.pdf_settings_visible = False
+
+            if show_pdf_settings:
+                st.session_state.pdf_settings_visible = not st.session_state.pdf_settings_visible
+
+            # Show PDF settings only if the toggle is on
+            if st.session_state.pdf_settings_visible:
+                focus_node = st.text_input("Focus on node (optional):", "")
+                max_depth = st.number_input(
+                    "Max depth from focus node:", min_value=1, value=5
+                )
+                orientation = st.radio("PDF Orientation", ["landscape", "portrait"])
+
+                focus_node = focus_node if focus_node else None
+                generate_pdf = st.button("Generate PDF")
+            else:
+                focus_node = None
+                max_depth = 5
+                orientation = "landscape"
+                generate_pdf = False
 
         with info_col:
-            node_options = [node for node in G.nodes()]
-
-            # Find the index of the current selected node in the options list
-            if (
-                "selected_node_id" in st.session_state
-                and st.session_state.selected_node_id
-            ):
-                selected_node_id = st.session_state.selected_node_id
-            else:
-                selected_node_id = "Node0"
-
-            current_index = next(
-                (
-                    i
-                    for i, option in enumerate(node_options)
-                    if option == selected_node_id
-                ),
-                0,
-            )
-
+            # Update the node selection dropdown
+            max_visible_node = min(int(st.session_state.max_node_id), st.session_state.total_nodes - 1)
+            node_options = [f"Node{i}" for i in range(max_visible_node + 1)]
+            
             selected_node_option = st.selectbox(
                 "Select Node",
                 node_options,
-                index=current_index,
+                index=node_options.index(f"Node{st.session_state.selected_node_id}"),
                 key="selected_node_option",
             )
             if selected_node_option:
-                if selected_node_option.startswith("Node"):
-                    st.session_state.selected_node_id = int(
-                        selected_node_option.split("Node")[1]
-                    )
-                    st.session_state.selected_type = "node"
+                st.session_state.selected_node_id = int(selected_node_option.split("Node")[1])
 
+            # Display selected node information
             if st.session_state.selected_node_id is not None:
                 node_id = st.session_state.selected_node_id
                 selected_node = find_node_by_id(search_tree.root, node_id)
@@ -487,7 +545,7 @@ def update_visualization(container, search_tree: SearchTree, selected_tree_path:
 
                     with tab_contents[tabs.index("Summary")]:
                         if selected_node.action:
-                            st.subheader(selected_node.action.name)
+                            st.subheader(f"Node{selected_node.node_id}: {selected_node.action.name}")
                             st.json(selected_node.action.model_dump())
 
                             if selected_node.observation:
@@ -539,6 +597,13 @@ def update_visualization(container, search_tree: SearchTree, selected_tree_path:
                     "Select a node in the graph or from the dropdown to view details"
                 )
 
+        # Auto-play logic
+        if st.session_state.auto_play and st.session_state.max_node_id < st.session_state.total_nodes - 1:
+            st.session_state.max_node_id += 1
+            st.session_state.selected_node_id = st.session_state.max_node_id
+            time.sleep(1)  # Delay between steps
+            st.rerun()
+            
         # Move PDF generation and download button outside of columns
         if generate_pdf:
             with st.spinner("Generating PDF..."):
@@ -553,7 +618,6 @@ def update_visualization(container, search_tree: SearchTree, selected_tree_path:
                 file_name="trajectory_tree.pdf",
                 mime="application/pdf",
             )
-
 
 def find_node_by_id(root_node: Node, node_id: int) -> Optional[Node]:
     if root_node.node_id == node_id:
@@ -689,3 +753,12 @@ def save_tree_as_pdf(G, pos, focus_node=None, max_depth=None, orientation="lands
 
     # Return the PDF content as bytes
     return pdf_buffer.getvalue()
+
+
+# Helper function to count total nodes in the tree
+def count_total_nodes(root_node):
+    count = 1
+    for child in root_node.children:
+        count += count_total_nodes(child)
+    return count
+

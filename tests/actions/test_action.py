@@ -45,3 +45,19 @@ def test_take_action():
     schema = action_type.model_json_schema()
     assert "properties" in schema
     assert "action" in schema["properties"]
+
+def test_get_action_by_args_class():
+    assert Action.get_action_by_args_class(FinishArgs) == Finish
+    assert Action.get_action_by_args_class(RequestCodeChangeArgs) == RequestCodeChange
+    assert Action.get_action_by_args_class(RequestMoreContextArgs) == RequestMoreContext
+    assert Action.get_action_by_args_class(SemanticSearchArgs) == SemanticSearch
+
+def test_get_action_by_name():
+    assert Action.get_action_by_name("Finish") == Finish
+    assert Action.get_action_by_name("RequestCodeChange") == RequestCodeChange
+    assert Action.get_action_by_name("RequestMoreContext") == RequestMoreContext
+    assert Action.get_action_by_name("SemanticSearch") == SemanticSearch
+    assert Action.get_action_by_name("FindFunction") == FindFunction
+
+    with pytest.raises(ValueError):
+        Action.get_action_by_name("NonExistentAction")

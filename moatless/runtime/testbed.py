@@ -267,7 +267,7 @@ class TestbedEnvironment(RuntimeEnvironment):
                 if len(failure_sections) > 1:
                     # skip tests with the same root cause
                     hashed_section = self._hash_output(failure_sections[-1])
-                elif trace_items and trace_items[0].observation:
+                elif trace_items and trace_items[0].output:
                     hashed_section = hashlib.sha256(
                         (str(trace_items[0])).encode()
                     ).hexdigest()

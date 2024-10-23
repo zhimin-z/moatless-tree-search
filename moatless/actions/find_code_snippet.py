@@ -1,5 +1,5 @@
 import logging
-from typing import Optional, Type
+from typing import Optional, Type, ClassVar
 
 from pydantic import Field
 
@@ -30,7 +30,7 @@ class FindCodeSnippetArgs(SearchBaseArgs):
 
 
 class FindCodeSnippet(SearchBaseAction):
-    args_schema: Type[ActionArguments] = FindCodeSnippetArgs
+    args_schema: ClassVar[Type[ActionArguments]] = FindCodeSnippetArgs
 
     def _search(self, args: FindCodeSnippetArgs) -> SearchCodeResponse:
         logger.info(

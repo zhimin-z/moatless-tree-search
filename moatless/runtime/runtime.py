@@ -4,6 +4,7 @@ from typing import List, Optional
 
 from pydantic import BaseModel, Field
 
+from moatless.file_context import FileContext
 from moatless.schema import RankedFileSpan
 
 
@@ -26,7 +27,7 @@ class TestResult(BaseModel):
     )
 
 
-class RuntimeEnvironment(BaseModel, ABC):
+class RuntimeEnvironment(ABC):
     @abstractmethod
-    def run_tests(self, test_files: List[str] | None = None) -> list[TestResult]:
+    def run_tests(self, file_context: FileContext, test_files: List[str] | None = None) -> list[TestResult]:
         pass

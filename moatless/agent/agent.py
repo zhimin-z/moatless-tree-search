@@ -52,6 +52,11 @@ class Agent(BaseModel):
         """
         Generate an action
         """
+
+        if node.action:
+            logger.info(f"Node{node.node_id}: Action already generated. Skipping.")
+            return
+
         completion_response = None
         try:
             possible_actions = self._determine_possible_actions(node)
@@ -84,6 +89,10 @@ class Agent(BaseModel):
             )
 
     def _execute_action(self, node: Node):
+        if node.observation:
+            logger.info(f"Node{node.node_id}: Observation already generated. Skipping.")
+            return
+
         action = self._action_map.get(type(node.action))
         if action:
             node.observation = action.execute(node.action, node.file_context)
@@ -206,11 +215,11 @@ class Agent(BaseModel):
 
             if repository:
                 actions = [
-                    Action.model_validate(action_data, repository=repository, runtime=runtime, code_index=code_index)
+                    Action.from_dict(action_data, repository=repository, runtime=runtime, code_index=code_index)
                     for action_data in obj.get("actions", [])
                 ]
             else:
-                logger.info(f"No repository provided, skip iniating acitons")
+                logger.debug(f"No repository provided, skip iniating acitons")
                 actions = []
 
             instance = cls(actions=actions, completion=completion)

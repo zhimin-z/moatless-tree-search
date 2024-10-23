@@ -1,5 +1,5 @@
 import logging
-from typing import List, Type
+from typing import List, Type, ClassVar
 
 from pydantic import Field
 
@@ -23,7 +23,7 @@ class FindClassArgs(SearchBaseArgs):
 
 
 class FindClass(SearchBaseAction):
-    args_schema: Type[ActionArguments] = FindClassArgs
+    args_schema: ClassVar[Type[ActionArguments]] = FindClassArgs
 
     def to_prompt(self):
         prompt = f"Searching for class: {self.args.class_name}"
@@ -60,7 +60,8 @@ class FindClass(SearchBaseAction):
             return self._code_index.find_class(args.class_name, file_pattern=None)
         return SearchCodeResponse()
 
-    def get_evaluation_criteria(self, trajectory_length) -> List[str]:
+    @classmethod
+    def get_evaluation_criteria(cls, trajectory_length) -> List[str]:
         criteria = super().get_evaluation_criteria(trajectory_length)
         criteria.extend(
             [

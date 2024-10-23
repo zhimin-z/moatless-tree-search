@@ -3,10 +3,10 @@ from typing import List, Optional, Tuple
 
 from pydantic import BaseModel, PrivateAttr
 
+from moatless.actions.action import Action, RewardScaleEntry
 from moatless.completion.completion import CompletionModel
 from moatless.completion.model import Message, UserMessage, Completion
 from moatless.node import Node, Reward
-from moatless.value_function.model import RewardScaleEntry
 
 logger = logging.getLogger(__name__)
 
@@ -92,7 +92,7 @@ class ValueFunction(BaseModel):
         return UserMessage(content=message)
 
     def _build_system_prompt(self, node: Node):
-        action = node.action
+        action = Action.get_action_by_args_class(type(node.action))
         trajectory_length = len(node.get_trajectory())
 
         base_prompt = action.get_value_function_prompt()
@@ -123,9 +123,10 @@ class ValueFunction(BaseModel):
             prompt += (
                 "The following actions were available for the agent to choose from:\n\n"
             )
-            for action in node.possible_actions:
+            for action_name in node.possible_actions:
+                action = Action.get_action_by_name(action_name)
                 try:
-                    schema = action.model_json_schema()
+                    schema = action.args_schema.model_json_schema()
                     prompt += f"* **{schema['title']}**: {schema['description']}"
                 except Exception as e:
                     logger.error(

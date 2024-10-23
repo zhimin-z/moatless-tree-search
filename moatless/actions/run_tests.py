@@ -4,11 +4,10 @@ from typing import List, Any, Dict
 from pydantic import Field, PrivateAttr
 
 from moatless.actions.action import Action
-from moatless.actions.model import ActionArguments, Observation
+from moatless.actions.model import ActionArguments, Observation, RewardScaleEntry
 from moatless.file_context import FileContext
 from moatless.index.code_index import CodeIndex, is_test
 from moatless.repository.repository import Repository
-from moatless.value_function.model import RewardScaleEntry
 from moatless.runtime.runtime import RuntimeEnvironment, TestResult, TestStatus
 
 logger = logging.getLogger(__name__)
@@ -38,21 +37,22 @@ class RunTestsArgs(ActionArguments):
 class RunTests(Action):
     args_schema = RunTestsArgs
 
-    _code_index: CodeIndex = PrivateAttr()
-    _repository: Repository = PrivateAttr()
-    _runtime: RuntimeEnvironment = PrivateAttr()
+    _code_index: CodeIndex 
+    _repository: Repository
+    _runtime: RuntimeEnvironment
 
     def __init__(
         self,
-        code_index: CodeIndex,
-        repository: Repository,
-        runtime: RuntimeEnvironment,
+        code_index: CodeIndex | None = None,
+        repository: Repository | None = None,
+        runtime: RuntimeEnvironment | None = None,
         **data,
     ):
         super().__init__(**data)
-        self._code_index = code_index
         self._repository = repository
+        self._code_index = code_index
         self._runtime = runtime
+
 
     def execute(
         self, args: RunTestsArgs, file_context: FileContext | None = None
@@ -120,7 +120,7 @@ class RunTests(Action):
                         test_files.append(search_result.file_path)
 
         logger.info(f"Running tests: {test_files}")
-        test_results = self._runtime.run_tests(test_files)
+        test_results = self._runtime.run_tests(file_context, test_files)
         failing_tests = [
             issue
             for issue in test_results
@@ -207,7 +207,8 @@ class RunTests(Action):
             properties={"test_results": result_dicts},
         )
 
-    def get_evaluation_criteria(self, trajectory_length) -> List[str]:
+    @classmethod
+    def get_evaluation_criteria(cls, trajectory_length) -> List[str]:
         criteria = [
             "Test Result Evaluation: Analyze test results in conjunction with the proposed code changes.",
             "Test Failures Categorization: Differentiate between minor, foreseeable, and unforeseeable failures.",
@@ -220,7 +221,8 @@ class RunTests(Action):
         ]
         return criteria
 
-    def get_reward_scale(self, trajectory_length) -> List[RewardScaleEntry]:
+    @classmethod
+    def get_reward_scale(cls, trajectory_length) -> List[RewardScaleEntry]:
         return [
             RewardScaleEntry(
                 min_value=90,
@@ -259,20 +261,13 @@ class RunTests(Action):
             ),
         ]
 
-    def model_dump(self, **kwargs) -> Dict[str, Any]:
-        dump = super().model_dump(**kwargs)
-        dump["code_index"] = self._code_index.dict()
-        dump["repository"] = self._repository.model_dump()
-        dump["runtime"] = self._runtime.model_dump()
-        return dump
-
     @classmethod
     def model_validate(cls, obj: Any) -> "RunTests":
         if isinstance(obj, dict):
             obj = obj.copy()
-            repository = Repository.model_validate(obj.pop("repository", {}))
-            code_index = CodeIndex(file_repo=repository, **obj.pop("code_index", {}))
-            runtime = RuntimeEnvironment.model_validate(obj.pop("runtime", {}))
+            repository = obj.pop("repository")
+            code_index = obj.pop("code_index")
+            runtime = obj.pop("runtime")
             return cls(
                 code_index=code_index, repository=repository, runtime=runtime, **obj
             )

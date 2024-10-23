@@ -13,32 +13,24 @@ logger = logging.getLogger(__name__)
 
 
 def evaluate_search_and_code(
-    model: str,
-    temperature: float = 0.2,
-    identify_model: Optional[str] = None,
-    resolved_by: Optional[int] = 5,
-    enable_mcts: bool = True,
+    resolved_by: Optional[int] = None,
     instance_ids: Optional[list] = None,
     repo_base_dir: str | None = None,
     use_testbed: bool = True,
-    name: str = "search_and_code",
     num_workers: int = 4,
-    max_cost: float = 5.0,
     evaluation_name=None,
     evaluations_dir=None,
     date=None,
     tree_search_settings: TreeSearchSettings = None,
-    retry_trajectory: bool = False,
     **kwargs,
 ):
-    temperature = temperature or kwargs.get("temp_bias", 0.2)
+    temperature = tree_search_settings.model.temperature or kwargs.get("temp_bias", 0.2)
 
     if evaluation_name is None:
         evaluation_name = create_evaluation_name(
-            model=model,
+            model=tree_search_settings.model.model,
             date=date,
             max_expansions=tree_search_settings.max_expansions,
-            mcts=enable_mcts,
             debate=tree_search_settings.debate,
             provide_feedback=tree_search_settings.provide_feedback,
             temp_bias=temperature,
@@ -47,21 +39,18 @@ def evaluate_search_and_code(
 
     if not evaluations_dir:
         evaluations_dir = os.getenv("MOATLESS_DIR")
-        evaluation_name = os.path.join(name, evaluation_name)
 
-    tree_search_settings.model = ModelSettings(model=model, temperature=temperature)
     # Expect models with prefix openai/ to be custom
-    if model.startswith("openai/"):
+    if tree_search_settings.model.model.startswith("openai/"):
         tree_search_settings.model.base_url = os.getenv("CUSTOM_LLM_API_BASE")
         tree_search_settings.model.api_key = os.getenv("CUSTOM_LLM_API_KEY")
 
     logger.info("Evaluation Parameters:")
     logger.info(f"Evalation dir: {evaluations_dir}")
     logger.info(f"Evaluation Name: {evaluation_name}")
-    logger.info(f"Model: {model}")
+    logger.info(f"Model: {tree_search_settings.model.model}")
     logger.info(f"Model Base URL: {tree_search_settings.model.base_url}")
     logger.info(f"Temperature: {temperature}")
-    logger.info(f"Identify Model: {identify_model or model}")
     logger.info(f"Tree Search Settings:")
     logger.info(f"  Max Expansions: {tree_search_settings.max_expansions}")
     logger.info(f"  Max Iterations: {tree_search_settings.max_iterations}")
@@ -75,7 +64,7 @@ def evaluate_search_and_code(
         logger.info(
             f"  Value Function Model Temperature: {tree_search_settings.value_function_model.temperature}"
         )
-    logger.info(f"Max Cost: {max_cost}")  # TODO: Not used ATM
+    logger.info(f"Max Cost: {tree_search_settings.max_cost}")  # TODO: Not used ATM
     logger.info(f"Max iterations: {tree_search_settings.max_iterations}")
     logger.info(f"Number of Workers: {num_workers}")
     logger.info(f"Use Testbed: {use_testbed}")
@@ -89,11 +78,7 @@ def evaluate_search_and_code(
         repo_base_dir=repo_base_dir,
         max_file_context_tokens=16000,
         num_workers=num_workers,
-        detailed_report=True,
-        model=model,
         use_testbed=use_testbed,
-        use_local_git_upstream=True,
-        **kwargs,
     )
 
     evaluation.run_evaluation(
@@ -112,7 +97,6 @@ def ensure_dir(file_path):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mcts", action="store_true")
     parser.add_argument("--model", type=str, default=None)
     parser.add_argument("--temp", type=float, default=0.2)
     parser.add_argument(
@@ -121,19 +105,15 @@ if __name__ == "__main__":
     parser.add_argument("--debate", action="store_true")
     parser.add_argument("--max_expansions", type=int, default=3)
     parser.add_argument("--max_iterations", type=int, default=50)
-    parser.add_argument("--max_transitions", type=int, default=100)
     parser.add_argument("--max_cost", type=float, default=5.0)
     parser.add_argument("--reward_threshold", type=int, default=None)
     parser.add_argument("--feedback", action="store_true")
-    parser.add_argument("--temp_bias", type=float, default=0.0)
     parser.add_argument("--num_workers", type=int, default=8)
     parser.add_argument("--date", type=str, default=None)
-    parser.add_argument("--name", type=str, default="search_and_code")
     parser.add_argument("--eval_dir", type=str, default=None)
     parser.add_argument("--eval_name", type=str, default=None)
     parser.add_argument("--repo_base_dir", type=str, default=None)
     parser.add_argument("--instance_ids", type=str, nargs="+", default=None)
-    parser.add_argument("--retry_trajectory", action="store_true")
     parser.add_argument("--sample_first", action="store_true")
     parser.add_argument("--resolved_by", type=int, default=None)
     args = parser.parse_args()
@@ -206,7 +186,6 @@ if __name__ == "__main__":
     model_settings = ModelSettings(model=args.model, temperature=args.temp)
 
     tree_search_settings = TreeSearchSettings(
-        max_expansions=args.max_expansions,
         max_iterations=args.max_iterations,
         min_finished_transitions=3,
         max_finished_transitions=5,
@@ -214,23 +193,17 @@ if __name__ == "__main__":
         provide_feedback=args.feedback,
         debate=args.debate,
         best_first=True,
-        value_function_model=model_settings,
-        value_function_model_temperature=0.0,
+        model=model_settings
     )
 
     evaluate_search_and_code(
-        retry_trajectory=args.retry_trajectory,
         evaluation_name=args.eval_name,
         evaluations_dir=args.eval_dir,
         name=args.name,
         repo_base_dir=args.repo_base_dir,
-        enable_mcts=args.mcts,
         tree_search_settings=tree_search_settings,
         instance_ids=args.instance_ids,
         date=args.date,
-        model=args.model,
-        temperature=args.temp,
-        max_cost=args.max_cost,
         use_testbed=not args.no_testbed,
         num_workers=args.num_workers,
         best_first=not args.sample_first,

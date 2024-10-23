@@ -258,13 +258,13 @@ class SearchTree(BaseModel):
     def _simulate(self, node: Node):
         """Simulate a playout by executing the action and evaluating the result."""
 
-        if not node.action:
+        if not node.observation:
             self.agent.run(node)
 
         if self.value_function:
             node.reward, completion_response = self.value_function.get_reward(node=node)
             node.completions["value_function"] = completion_response
-            logger.info(f"Node{node.node_id}: Reward = {node.reward.value}.")
+            logger.info(f"Node{node.node_id}: The value function returned a reward of {node.reward.value}.")
 
     def _backpropagate(self, node: Node):
         """Backpropagate the reward up the tree."""
