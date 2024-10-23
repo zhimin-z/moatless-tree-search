@@ -1,11 +1,11 @@
 import logging
 from enum import Enum
-from typing import Optional, List, Union, Tuple, Any, Type
+from typing import Optional, List, Union, Tuple, Any, Type, ClassVar
 
 from pydantic import Field, PrivateAttr
 
 from moatless.actions.action import Action
-from moatless.actions.model import ActionArguments, Observation
+from moatless.actions.model import ActionArguments, Observation, RewardScaleEntry
 from moatless.codeblocks import CodeBlock, get_parser_by_path
 from moatless.codeblocks.codeblocks import CodeBlockTypeGroup, CodeBlockType
 from moatless.codeblocks.module import Module
@@ -14,7 +14,6 @@ from moatless.completion.model import AssistantMessage, UserMessage
 from moatless.file_context import FileContext, ContextFile
 from moatless.repository.file import do_diff, remove_duplicate_lines
 from moatless.repository.repository import Repository
-from moatless.value_function.model import RewardScaleEntry
 from moatless.utils.tokenizer import count_tokens
 
 logger = logging.getLogger(__name__)
@@ -116,7 +115,7 @@ class RequestCodeChangeArgs(ActionArguments):
 
 
 class RequestCodeChange(Action):
-    args_schema: Type[ActionArguments] = RequestCodeChangeArgs
+    args_schema: ClassVar[Type[ActionArguments]] = RequestCodeChangeArgs
 
     max_tokens_in_edit_prompt: int = Field(
         default=500,
@@ -130,7 +129,7 @@ class RequestCodeChange(Action):
     _completion_model: CompletionModel = PrivateAttr()
 
     def __init__(
-        self, repository: Repository, completion_model: CompletionModel, **data
+        self, repository: Repository | None = None, completion_model: CompletionModel | None = None, **data
     ):
         super().__init__(**data)
         self._repository = repository
@@ -803,7 +802,8 @@ class RequestCodeChange(Action):
             list_str += f" * {span_id}\n"
         return list_str
 
-    def get_evaluation_criteria(self, trajectory_length) -> List[str]:
+    @classmethod
+    def get_evaluation_criteria(cls, trajectory_length) -> List[str]:
         criteria = super().get_evaluation_criteria(trajectory_length)
         criteria.extend(
             [
@@ -818,8 +818,9 @@ class RequestCodeChange(Action):
         )
         return criteria
 
-    def get_reward_scale(self, trajectory_length) -> List[RewardScaleEntry]:
-        return self.generate_reward_scale_entries(
+    @classmethod
+    def get_reward_scale(cls, trajectory_length) -> List[RewardScaleEntry]:
+        return cls.generate_reward_scale_entries(
             [
                 (
                     90,
@@ -861,19 +862,16 @@ class RequestCodeChange(Action):
 
     def model_dump(self, **kwargs):
         dump = super().model_dump(**kwargs)
-        dump["repository"] = self._repository.model_dump(**kwargs)
         dump["completion_model"] = self._completion_model.model_dump(**kwargs)
         return dump
 
     @classmethod
-    def model_validate(cls, obj):
-        if "repository" in obj:
-            obj["repository"] = Repository.model_validate(obj["repository"])
+    def model_validate(cls, obj: dict):
         if "completion_model" in obj and obj["completion_model"]:
             obj["completion_model"] = CompletionModel.model_validate(
                 obj["completion_model"]
             )
+
         return cls(
-            _repository=obj.get("repository"),
-            _completion_model=obj.get("completion_model"),
+            **obj
         )

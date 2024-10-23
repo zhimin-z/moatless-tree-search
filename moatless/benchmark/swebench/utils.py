@@ -150,12 +150,11 @@ def create_repository(
     # Ensure the directory for the lock file exists
     os.makedirs(os.path.dirname(lock_file_path), exist_ok=True)
 
-    repo = None
     repo_path = f"{repo_base_dir}/swe-bench_{instance['instance_id']}"
     if os.path.exists(repo_path):
         try:
             logger.info(f"Initializing GitRepository from existing repo {repo_path}")
-            return GitRepository(repo_path)
+            return GitRepository(repo_path=repo_path)
         except Exception as e:
             logging.warning(f"Error initializing GitRepository: {e}")
 
@@ -173,6 +172,7 @@ def create_repository(
                 raise
         logging.debug(f"Releasing lock for {local_repo_path}")
         fcntl.flock(lock_file, fcntl.LOCK_UN)
+
     repo_url = f"file://{local_repo_path}"
 
     return GitRepository.from_repo(

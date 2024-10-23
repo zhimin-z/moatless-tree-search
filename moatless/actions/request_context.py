@@ -4,11 +4,10 @@ from typing import List, Optional
 from pydantic import Field, BaseModel, PrivateAttr
 
 from moatless.actions.action import Action
-from moatless.actions.model import ActionArguments, Observation
+from moatless.actions.model import ActionArguments, Observation, RewardScaleEntry
 from moatless.codeblocks import CodeBlockType
 from moatless.file_context import FileContext, ContextFile
 from moatless.repository.repository import Repository
-from moatless.value_function.model import RewardScaleEntry
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +77,7 @@ class RequestMoreContext(Action):
 
     _repository: Repository = PrivateAttr()
 
-    def __init__(self, repository: Repository, **data):
+    def __init__(self, repository: Repository | None = None, **data):
         super().__init__(**data)
         self._repository = repository
 
@@ -232,7 +231,8 @@ class RequestMoreContext(Action):
             list_str += f" * {span_id}\n"
         return list_str
 
-    def get_evaluation_criteria(self, trajectory_length) -> List[str]:
+    @classmethod
+    def get_evaluation_criteria(cls, trajectory_length) -> List[str]:
         criteria = [
             "Relevance of Requested Context: Ensure that the requested context is directly related to the problem and necessary for making progress.",
             "Avoiding Hallucinations: Verify that the agent is requesting context for code that actually exists in the codebase.",
@@ -241,7 +241,8 @@ class RequestMoreContext(Action):
         ]
         return criteria
 
-    def get_reward_scale(self, trajectory_length) -> List[RewardScaleEntry]:
+    @classmethod
+    def get_reward_scale(cls, trajectory_length) -> List[RewardScaleEntry]:
         return [
             RewardScaleEntry(
                 min_value=75,

@@ -38,7 +38,7 @@ class ActionArguments(OpenAISchema, ABC):
     def from_tool_call(cls, tool_args: dict[str, Any], tool_name: str | None = None):
         return cls(**tool_args)
 
-    def equals(self, other: "Action") -> bool:
+    def equals(self, other: "ActionArguments") -> bool:
         return self.model_dump(exclude={"scratch_pad"}) == other.model_dump(
             exclude={"scratch_pad"}
         )
@@ -78,7 +78,6 @@ class ActionArguments(OpenAISchema, ABC):
                     and obj != ActionArguments
                 ):
                     _action_args[name] = obj
-                    
 
     def model_dump(self, **kwargs) -> Dict[str, Any]:
         dump = {
@@ -119,6 +118,11 @@ class ActionArguments(OpenAISchema, ABC):
             context=validation_context,
             strict=strict,
         )
+
+class RewardScaleEntry(BaseModel):
+    min_value: int
+    max_value: int
+    description: str
 
 
 class Observation(BaseModel):

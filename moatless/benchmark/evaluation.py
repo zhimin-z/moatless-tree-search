@@ -29,6 +29,7 @@ from moatless.benchmark.utils import get_moatless_instance
 from moatless.completion.completion import CompletionModel, LLMResponseFormat
 from moatless.discriminators import MeanAwardDiscriminator
 from moatless.feedback import FeedbackGenerator
+from moatless.file_context import FileContext
 from moatless.search_tree import SearchTree
 from moatless.selector import BestFirstSelector, SoftmaxSelector
 from moatless.templates import create_coding_actions
@@ -55,7 +56,7 @@ class ModelSettings(BaseModel):
         description="The API key for the model API.",
     )
     response_format: Optional[LLMResponseFormat] = Field(
-        None,
+        LLMResponseFormat.TOOLS,
         description="The response format for the model API.",
     )
 
@@ -134,7 +135,6 @@ class Evaluation:
         evaluations_dir: str,
         evaluation_name: str,
         settings: TreeSearchSettings,
-        use_perfect_file_context: bool = False,
         max_file_context_tokens: int = 16000,
         dataset_name: str = "princeton-nlp/SWE-bench_Lite",
         repo_base_dir: str | None = None,
@@ -142,20 +142,16 @@ class Evaluation:
         litellm_callback: Optional[str] = None,
         num_workers: int = 1,
         use_testbed: bool = False,
-        use_local_git_upstream: bool = True,
-        **kwargs,
     ):
         self.evaluations_dir = evaluations_dir
         self.num_workers = num_workers
         self.report_mode = report_mode
         self.dataset_name = dataset_name
         self.evaluation_name = evaluation_name
-        self.use_local_git_upstream = use_local_git_upstream
 
         self.use_testbed = use_testbed
 
         self.settings = settings
-        self.use_perfect_file_context = use_perfect_file_context
         self.max_file_context_tokens = max_file_context_tokens
 
         self.evaluation_dir = f"{evaluations_dir}/{evaluation_name}"
@@ -293,8 +289,8 @@ class Evaluation:
         logger.info(f"Evaluating {instance_id}")
         problem_statement = instance["problem_statement"]
 
-        workspace = None
-        testbed = None
+        runtime = None
+        repository = None
 
         self.update_status(instance_id, "started")
         self.log_event(instance_id, "evaluate_instance_initiated")
@@ -305,6 +301,7 @@ class Evaluation:
             if os.path.exists(trajectory_path):
                 persisted_tree = SearchTree.from_file(trajectory_path)
                 if persisted_tree.is_finished():
+
                     logger.info(f"Found completed search tree for {instance_id}")
                     search_tree = persisted_tree
 
@@ -330,8 +327,6 @@ class Evaluation:
                         instance=instance,
                         log_dir=log_dir,
                     )
-                else:
-                    runtime = None
 
                 if os.path.exists(trajectory_path):
                     search_tree = SearchTree.from_file(trajectory_path, repository=repository, runtime=runtime, code_index=code_index)
@@ -351,23 +346,30 @@ class Evaluation:
                     value_function = ValueFunction(
                         completion=self._create_completion_model(self.settings.value_function_model)
                     )
-                    feedback = FeedbackGenerator()
+
+                    if self.settings.provide_feedback:
+                        feedback = FeedbackGenerator()
+                    else:
+                        feedback = None
+
                     discriminator = MeanAwardDiscriminator()
 
-                    search_tree = SearchTree(
+                    file_context = FileContext(repo=repository)
+
+                    search_tree = SearchTree.create(
                         message=problem_statement,
-                        workspace=workspace,
+                        file_context=file_context,
                         agent=agent,
                         selector=selector,
                         value_function=value_function,
-                        feedback=feedback,
                         discriminator=discriminator,
+                        feedback_generator=feedback,
                         max_expansions=self.settings.max_expansions,
                         max_iterations=self.settings.max_iterations,
-                        max_cost=self.settings.max_cost,
-                        min_finished_nodes=self.settings.min_finished_nodes,
-                        rewards_threshold=self.settings.reward_threshold,
                         max_depth=self.settings.max_depth,
+                        min_finished_nodes=self.settings.min_finished_nodes,
+                        max_cost=self.settings.max_cost,
+                        reward_threshold=self.settings.reward_threshold,
                         metadata=metadata,
                         persist_path=trajectory_path,
                     )
@@ -397,61 +399,76 @@ class Evaluation:
             if "node_results" not in eval_result:
                 eval_result["node_results"] = {}
 
-            if self.use_testbed and workspace and workspace.runtime:
-                for i, finished_node in enumerate(finished_nodes):
-                    logger.info(
-                        f"Evaluate finished Node{finished_node.node_id} {i+1}/{len(finished_nodes)} for instance {instance_id}"
-                    )
+            if self.use_testbed:
+                if len(eval_result.get("node_results")) == len(search_tree.get_finished_nodes()):
+                    logger.info(f"Already evaluated results for {len(search_tree.get_finished_nodes())} nodes in {instance_id}")
+                else:
 
-                    if finished_node.node_id in eval_result["node_results"]:
-                        continue
+                    if not runtime:
+                        repository = create_repository(instance, repo_base_dir=self.repo_base_dir)
+                        from testbed.sdk import TestbedSDK
+                        from moatless.runtime.testbed import TestbedEnvironment
+                        runtime = TestbedEnvironment(
+                            testbed_sdk=TestbedSDK(),
+                            repository=repository,
+                            instance=instance,
+                            log_dir=log_dir,
+                        )
 
-                    patch = finished_node.file_context.generate_git_patch()
-                    patch_hash = create_sha256_hash(patch)
+                    for i, finished_node in enumerate(finished_nodes):
+                        logger.info(
+                            f"Evaluate finished Node{finished_node.node_id} {i+1}/{len(finished_nodes)} for instance {instance_id}"
+                        )
 
-                    if patch:
-                        if patch_hash in patch_results:
-                            logger.info(
-                                f"Use already evaluated patch for Node{finished_node.node_id} in {instance_id}"
-                            )
-                            eval_result["node_results"][finished_node.node_id] = (
-                                patch_results[patch_hash]
-                            )
-                        else:
-                            start_time = time.time()
-                            result = workspace.runtime.evaluate(patch=patch)
-                            if not result:
-                                logger.error(
-                                    f"Error in evaluating patch for {instance_id}"
-                                )
-                                continue
+                        if finished_node.node_id in eval_result["node_results"]:
+                            continue
 
-                            eval_result["node_results"][finished_node.node_id] = (
-                                result.model_dump()
-                            )
-                            patch_results[patch_hash] = result.model_dump()
-                            logger.info(
-                                f"Evaluated patch in {time.time() - start_time} seconds (resolved: {result.resolved})"
-                            )
+                        patch = finished_node.file_context.generate_git_patch()
+                        patch_hash = create_sha256_hash(patch)
 
-                    if best_node and finished_node.node_id == best_node.node_id:
-                        self.save_prediction(instance_id, patch)
-                        eval_result["selected_node"] = finished_node.node_id
-
-                        if eval_result["node_results"].get(finished_node.node_id):
-                            eval_result["resolved"] = eval_result["node_results"][
-                                finished_node.node_id
-                            ]["resolved"]
-
-                            if eval_result.get("resolved"):
-                                logger.info(f"Resolved {instance['instance_id']}")
-                            else:
+                        if patch:
+                            if patch_hash in patch_results:
                                 logger.info(
-                                    f"Could not resolve {instance['instance_id']}"
+                                    f"Use already evaluated patch for Node{finished_node.node_id} in {instance_id}"
+                                )
+                                eval_result["node_results"][finished_node.node_id] = (
+                                    patch_results[patch_hash]
+                                )
+                            else:
+                                start_time = time.time()
+                                result = runtime.evaluate(patch=patch)
+                                if not result:
+                                    logger.error(
+                                        f"Error in evaluating patch for {instance_id}"
+                                    )
+                                    continue
+
+                                eval_result["node_results"][finished_node.node_id] = (
+                                    result.model_dump()
+                                )
+                                patch_results[patch_hash] = result.model_dump()
+                                logger.info(
+                                    f"Evaluated patch in {time.time() - start_time} seconds (resolved: {result.resolved})"
                                 )
 
-                    with open(eval_result_path, "w") as f:
-                        json.dump(eval_result, f, indent=2)
+                        if best_node and finished_node.node_id == best_node.node_id:
+                            self.save_prediction(instance_id, patch)
+                            eval_result["selected_node"] = finished_node.node_id
+
+                            if eval_result["node_results"].get(finished_node.node_id):
+                                eval_result["resolved"] = eval_result["node_results"][
+                                    finished_node.node_id
+                                ]["resolved"]
+
+                                if eval_result.get("resolved"):
+                                    logger.info(f"Resolved {instance['instance_id']}")
+                                else:
+                                    logger.info(
+                                        f"Could not resolve {instance['instance_id']}"
+                                    )
+
+                        with open(eval_result_path, "w") as f:
+                            json.dump(eval_result, f, indent=2)
 
             self.log_event(instance_id, "evaluation_completed")
             self.update_status(instance_id, eval_result["status"])
@@ -467,18 +484,19 @@ class Evaluation:
         finally:
             with open(eval_result_path, "w") as f:
                 json.dump(eval_result, f, indent=2)
-            # Clean up
-            if workspace and workspace.file_repo:
-                shutil.rmtree(workspace.file_repo.repo_dir, ignore_errors=True)
-                if workspace.runtime and workspace.runtime.testbed:
-                    try:
-                        workspace.runtime.testbed.destroy()
-                    except Exception:
-                        logger.exception("Error deleting testbed")
 
-            del workspace
+            # Clean up
+            if repository:
+                shutil.rmtree(repository.repo_dir, ignore_errors=True)
+            if runtime and runtime.testbed:
+                try:
+                    runtime.testbed.destroy()
+                except Exception:
+                    logger.exception("Error deleting testbed")
+
+            del runtime
+            del repository
             del search_tree
-            # del result
             gc.collect()
 
     def save_prediction(self, instance_id, submission):
@@ -495,7 +513,7 @@ class Evaluation:
     def _create_completion_model(self, model_settings: ModelSettings | None = None) -> CompletionModel:
         model_settings = model_settings or self.settings.model
         return CompletionModel(
-            model_settings=model_settings.model,
+            model=model_settings.model,
             temperature=model_settings.temperature,
             model_base_url=model_settings.base_url,
             model_api_key=model_settings.api_key,

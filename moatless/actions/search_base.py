@@ -1,16 +1,15 @@
 import logging
 from abc import ABC
-from typing import List, Optional, Type, Any, Dict
+from typing import List, Optional, Type, Any, Dict, ClassVar
 
 from pydantic import Field, PrivateAttr
 
 from moatless.actions.action import Action
-from moatless.actions.model import ActionArguments, Observation
+from moatless.actions.model import ActionArguments, Observation, RewardScaleEntry
 from moatless.file_context import FileContext
 from moatless.index import CodeIndex
 from moatless.index.types import SearchCodeResponse
 from moatless.repository.repository import Repository
-from moatless.value_function.model import RewardScaleEntry
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +22,7 @@ class SearchBaseArgs(ActionArguments, ABC):
 
 
 class SearchBaseAction(Action):
-    args_schema: Type[ActionArguments] = SearchBaseArgs
+    args_schema: ClassVar[Type[ActionArguments]] = SearchBaseArgs
 
     # TODO: Should be fields
     _max_search_tokens: int = 1000
@@ -32,7 +31,7 @@ class SearchBaseAction(Action):
     _repository: Repository = PrivateAttr()
     _code_index: CodeIndex = PrivateAttr()
 
-    def __init__(self, repository: Repository, code_index: CodeIndex, **data):
+    def __init__(self, repository: Repository | None = None, code_index: CodeIndex | None = None, **data):
         super().__init__(**data)
         self._repository = repository
         self._code_index = code_index
@@ -131,7 +130,8 @@ class SearchBaseAction(Action):
     ) -> SearchCodeResponse:
         return SearchCodeResponse()
 
-    def get_evaluation_criteria(self, trajectory_length) -> List[str]:
+    @classmethod
+    def get_evaluation_criteria(cls, trajectory_length) -> List[str]:
         evaluation_criteria = super().get_evaluation_criteria(trajectory_length)
         evaluation_criteria.extend(
             [
@@ -144,9 +144,10 @@ class SearchBaseAction(Action):
 
         return evaluation_criteria
 
-    def get_reward_scale(self, trajectory_length) -> List[RewardScaleEntry]:
+    @classmethod
+    def get_reward_scale(cls, trajectory_length) -> List[RewardScaleEntry]:
         if trajectory_length <= 3:
-            return self.generate_reward_scale_entries(
+            return cls.generate_reward_scale_entries(
                 [
                     (
                         90,
@@ -171,7 +172,7 @@ class SearchBaseAction(Action):
                 ]
             )
         else:
-            return self.generate_reward_scale_entries(
+            return cls.generate_reward_scale_entries(
                 [
                     (
                         90,
@@ -206,17 +207,13 @@ class SearchBaseAction(Action):
                 ]
             )
 
-    def model_dump(self, **kwargs) -> Dict[str, Any]:
-        dump = super().model_dump(**kwargs)
-        dump["code_index"] = self._code_index.dict()
-        dump["repository"] = self._repository.model_dump()
-        return dump
-
     @classmethod
-    def model_validate(cls, obj: Any) -> "SearchBaseAction":
+    def model_validate(cls, obj: Any) -> "RunTests":
         if isinstance(obj, dict):
             obj = obj.copy()
-            code_index = CodeIndex(**obj.pop("code_index", {}))
-            repository = Repository.model_validate(obj.pop("repository", {}))
-            return cls(code_index=code_index, repository=repository, **obj)
+            repository = obj.pop("repository")
+            code_index = obj.pop("code_index")
+            return cls(
+                code_index=code_index, repository=repository, **obj
+            )
         return super().model_validate(obj)

@@ -1,21 +1,23 @@
 import importlib
 import logging
+import pkgutil
 from abc import ABC
-from typing import List, Type, Tuple, Any, Dict
+from typing import List, Type, Tuple, Any, Dict, Optional, ClassVar
 
 from pydantic import BaseModel, ConfigDict
 
-from moatless.actions.model import ActionArguments, Observation
+from moatless.actions.model import ActionArguments, Observation, RewardScaleEntry
 from moatless.file_context import FileContext
 from moatless.index import CodeIndex
 from moatless.repository.repository import Repository
-from moatless.value_function.model import RewardScaleEntry
 
 logger = logging.getLogger(__name__)
 
+_actions: Dict[str, Type['Action']] = {}
+
 
 class Action(BaseModel, ABC):
-    args_schema: Type[ActionArguments]
+    args_schema: ClassVar[Type[ActionArguments]]
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -42,7 +44,8 @@ class Action(BaseModel, ABC):
     def name(self) -> str:
         return self.__class__.__name__
 
-    def get_evaluation_criteria(self, trajectory_length) -> List[str]:
+    @classmethod
+    def get_evaluation_criteria(cls, trajectory_length: int | None = None) -> List[str]:
         if trajectory_length < 3:
             return [
                 "Exploratory Actions: Recognize that initial searches and information-gathering steps are essential and should not be heavily penalized if they don't yield immediate results.",
@@ -55,7 +58,8 @@ class Action(BaseModel, ABC):
                 "Repetitive Actions: Detect if the agent is repeating the same unsuccessful actions without making progress and penalize accordingly.",
             ]
 
-    def get_reward_scale(self, trajectory_length) -> List[RewardScaleEntry]:
+    @classmethod
+    def get_reward_scale(cls, trajectory_length) -> List[RewardScaleEntry]:
         return [
             RewardScaleEntry(
                 min_value=75,
@@ -107,7 +111,8 @@ class Action(BaseModel, ABC):
             for min_val, max_val, desc in descriptions
         ]
 
-    def get_reward_range(self, trajectory_length: int) -> Tuple[int, int]:
+    @classmethod
+    def get_reward_range(cls, trajectory_length: int) -> Tuple[int, int]:
         """
         Get the minimum and maximum reward values for this action.
 
@@ -117,12 +122,13 @@ class Action(BaseModel, ABC):
         Returns:
             A tuple containing the minimum and maximum reward values
         """
-        reward_scale = self.get_reward_scale(trajectory_length)
+        reward_scale = cls.get_reward_scale(trajectory_length)
         min_reward = min(entry.min_value for entry in reward_scale)
         max_reward = max(entry.max_value for entry in reward_scale)
         return min_reward, max_reward
 
-    def get_value_function_prompt(self) -> str:
+    @classmethod
+    def get_value_function_prompt(cls) -> str:
         """
         Get the base prompt for the value function.
         This method can be overridden in subclasses to provide action-specific prompts.
@@ -143,31 +149,79 @@ At this stage, the agent is still working on the solution. Your task is twofold:
         return dump
 
     @classmethod
-    def model_validate(cls, obj: Any, repository: Repository = None, runtime: Any = None, code_index: CodeIndex = None) -> "Action":
-        if isinstance(obj, dict):
-            obj = obj.copy()
-            obj.pop("args_schema", None)
-            action_class_path = obj.pop("action_class", None)
-            if action_class_path:
-                module_name, class_name = action_class_path.rsplit(".", 1)
-                module = importlib.import_module(module_name)
-                action_class = getattr(module, class_name)
+    def from_dict(cls, obj: dict, repository: Repository = None, runtime: Any = None, code_index: CodeIndex = None) -> "Action":
+        obj = obj.copy()
+        obj.pop("args_schema", None)
+        action_class_path = obj.pop("action_class", None)
+        if action_class_path:
+            module_name, class_name = action_class_path.rsplit(".", 1)
+            module = importlib.import_module(module_name)
+            action_class = getattr(module, class_name)
 
-                if hasattr(action_class, "_repository") and hasattr(action_class, "_code_index") and hasattr(action_class, "_runtime"):
-                    if repository is not None:
-                        obj.pop("repository", None)
-                    if code_index is not None:
-                        obj.pop("code_index", None)
-                    if runtime is not None:
-                        obj.pop("runtime", None)
-                    
-                    # Use provided values, falling back to serialized values if not provided
-                    return action_class(
-                        repository=repository or obj.get("repository"),
-                        code_index=code_index or obj.get("code_index"),
-                        runtime=runtime or obj.get("runtime"),
-                        **obj
-                    )
-                
-                return action_class(**obj)
-        return super().model_validate(obj)
+            if repository and hasattr(action_class, "_repository"):
+                obj["repository"] = repository
+
+            if code_index and hasattr(action_class, "_code_index"):
+                obj["code_index"] = code_index
+
+            if runtime and hasattr(action_class, "_runtime"):
+                obj["runtime"] = runtime
+
+            return action_class.model_validate(obj)
+
+        raise ValueError(f"Unknown action: {obj}")
+
+    @classmethod
+    def model_validate(cls, obj: Any) -> "Action":
+        return cls(**obj)
+
+    @classmethod
+    def get_action_by_args_class(cls, args_class: Type[ActionArguments]) -> Optional[Type['Action']]:
+        """
+        Get the Action subclass corresponding to the given ActionArguments subclass.
+
+        Args:
+            args_class: The ActionArguments subclass to look up.
+
+        Returns:
+            The Action subclass if found, None otherwise.
+        """
+        def search_subclasses(current_class):
+            if hasattr(current_class, 'args_schema') and current_class.args_schema == args_class:
+                return current_class
+            for subclass in current_class.__subclasses__():
+                result = search_subclasses(subclass)
+                if result:
+                    return result
+            return None
+
+        return search_subclasses(cls)
+
+    @classmethod
+    def get_action_by_name(cls, action_name: str) -> Type['Action']:
+        """
+        Dynamically import and return the appropriate Action class for the given action name.
+        """
+        if not _actions:
+            cls._load_actions()
+
+        action = _actions.get(action_name)
+        if action:
+            return action
+
+        raise ValueError(f"Unknown action: {action_name}")
+
+    @classmethod
+    def _load_actions(cls):
+        actions_package = importlib.import_module("moatless.actions")
+
+        for _, module_name, _ in pkgutil.iter_modules(actions_package.__path__):
+            full_module_name = f"moatless.actions.{module_name}"
+            module = importlib.import_module(full_module_name)
+            for name, obj in module.__dict__.items():
+                if (
+                    isinstance(obj, type)
+                    and issubclass(obj, Action)
+                    and obj != Action
+                ):
+                    _actions[name] = obj

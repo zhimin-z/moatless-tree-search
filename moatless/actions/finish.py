@@ -1,12 +1,11 @@
-from typing import List
+from typing import ClassVar, List
 
 from litellm import Type
 from pydantic import Field
 
 from moatless.actions.action import Action
-from moatless.actions.model import ActionArguments, Observation
+from moatless.actions.model import ActionArguments, Observation, RewardScaleEntry
 from moatless.file_context import FileContext
-from moatless.value_function.model import RewardScaleEntry
 
 
 class FinishArgs(ActionArguments):
@@ -25,12 +24,13 @@ class FinishArgs(ActionArguments):
 
 
 class Finish(Action):
-    args_schema: Type[ActionArguments] = FinishArgs
+    args_schema: ClassVar[Type[ActionArguments]] = FinishArgs
 
     def execute(self, args: FinishArgs, file_context: FileContext | None = None):
         return Observation(message=args.finish_reason, terminal=True)
 
-    def get_evaluation_criteria(self) -> List[str]:
+    @classmethod
+    def get_evaluation_criteria(cls, trajectory_length: int) -> List[str]:
         return [
             "**Solution Correctness and Quality:** Verify that the proposed changes logically address the problem statement. Ensure the changes fit contextually within the existing codebase without introducing new issues. Confirm syntactic correctness and that there are no syntax errors or typos. Assess whether the solution represents an overall improvement and is the most optimal approach possible.",
             "**Accuracy of Code Modifications:** Check that the agent correctly identified the appropriate code spans to modify by reviewing the provided Git diff. Ensure the changes made are accurate and do not include unintended modifications. Look for any alterations to unrelated parts of the code that could introduce new problems.",
@@ -43,8 +43,9 @@ class Finish(Action):
             "**Assessment of Agent's Completion Assertion:** Verify if the agent's assertion that the task is finished is accurate. Determine if substantial work is still required to fully resolve the issue and address this in your evaluation.",
         ]
 
-    def get_reward_scale(self, trajectory_length) -> List[RewardScaleEntry]:
-        return self.generate_reward_scale_entries(
+    @classmethod
+    def get_reward_scale(cls, trajectory_length) -> List[RewardScaleEntry]:
+        return cls.generate_reward_scale_entries(
             [
                 (
                     90,
@@ -84,5 +85,6 @@ class Finish(Action):
             ]
         )
 
-    def get_value_function_prompt(self) -> str:
+    @classmethod
+    def get_value_function_prompt(cls) -> str:
         return """Your role is to evaluate the executed action of the search tree that our AI agents are traversing, with the goal of ensuring that a complete and verified solution is in place. The agent believes that it has finished solving the programming issue."""
