@@ -37,7 +37,7 @@ class CodingAgent(Agent):
             possible_actions = [
                 action
                 for action in possible_actions
-                if action.__class__ not in [RequestCodeChange, RequestMoreContext, RunTests]
+                if action.__class__ not in [RequestCodeChange, RunTests]
             ]
 
         # Remove RunTests if it was just executed in the parent node
