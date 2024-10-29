@@ -245,7 +245,7 @@ if __name__ == "__main__":
     ]
 
     # Create MultiAgentDebate instance
-    debate = MultiAgentDebate(n_agents=2, n_rounds=2)
+    debate = MultiAgentDebate(n_agents=8, n_rounds=2)
 
     # Conduct the debate
     final_action, final_completion, final_messages = debate.conduct_debate(

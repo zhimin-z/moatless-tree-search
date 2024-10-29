@@ -63,12 +63,12 @@ class ModelSettings(BaseModel):
 
 class TreeSearchSettings(BaseModel):
     max_expansions: int = Field(
-        1,
+        3,
         description="The maximum number of expansions of one state.",
     )
 
     max_iterations: int = Field(
-        25,
+        100,
         description="The maximum number of iterations to run the tree search.",
     )
 
@@ -93,8 +93,12 @@ class TreeSearchSettings(BaseModel):
     )
 
     min_finished_nodes: Optional[int] = Field(
-        None,
+        2,
         description="The minimum number of finished nodes to consider before finishing",
+    )
+    max_finished_nodes: Optional[int] = Field(
+        2,
+        description="The maximum number of finished nodes to consider before finishing",
     )
 
     reward_threshold: Optional[int] = Field(
@@ -103,13 +107,23 @@ class TreeSearchSettings(BaseModel):
     )
 
     provide_feedback: bool = Field(
-        False,
+        True,
         description="Whether to provide feedback from previosly evaluated transitions.",
     )
 
     debate: bool = Field(
-        False,
+        True,
         description="Whether to debate the rewards to transitions.",
+    )
+
+    debate_n_agents: Optional[int] = Field(
+        8,
+        description="The number of agents to debate the rewards to transitions.",
+    )
+
+    debate_n_rounds: Optional[int] = Field(
+        3,
+        description="The number of rounds to debate the rewards to transitions.",
     )
 
     best_first: bool = Field(
@@ -361,10 +375,9 @@ class Evaluation:
                     # discriminator = MeanAwardDiscriminator()
                     discriminator = AgentDiscriminator(
                         create_completion=self._create_completion_model(),
-                        debate=self.settings.debate,
                         debate_settings=DebateSettings(
-                            n_agents=self.settings.debate_settings.n_agents,
-                            n_rounds=self.settings.debate_settings.n_rounds,
+                            n_agents=self.settings.debate_n_agents,
+                            n_rounds=self.settings.debate_n_rounds,
                         )
                     )
 
@@ -390,6 +403,7 @@ class Evaluation:
                         max_iterations=self.settings.max_iterations,
                         max_depth=self.settings.max_depth,
                         min_finished_nodes=self.settings.min_finished_nodes,
+                        max_finished_nodes=self.settings.max_finished_nodes,
                         max_cost=self.settings.max_cost,
                         reward_threshold=self.settings.reward_threshold,
                         metadata=metadata,
