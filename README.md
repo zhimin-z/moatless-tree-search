@@ -1,14 +1,110 @@
-# SWE-search
+# Moatless-Tree-Search 
+
+Note: The original development code can be found at [https://github.com/a-antoniades/swe-planner](https://github.com/a-antoniades/swe-planner). It is only intended for reproducing the results in the paper. This is a clean refactor which will be extended and actively maintained.
+
+![License](https://img.shields.io/badge/LICENSE-APACHE_LICENSE_2.0-yellow?style=flat-square&labelColor=lightgrey)
+![arXiv](https://img.shields.io/badge/arXiv-2408.08435-B31B1B?style=flat-square)
+![Streamlit](https://img.shields.io/badge/WEBSITE-brown?style=flat-square)
+![Twitter](https://img.shields.io/badge/TWITTER-00ACEE?style=flat-square)
+![YouTube](https://img.shields.io/badge/YOUTUBE-FF0000?style=flat-square)
 
 
-[📜 Paper](https://arxiv.org/abs/2311.00136) | [📄 Project Page](https://a-antoniades.github.io/Neuroformer_web/)
+<div align="center">
+  <a href="assets/method.pdf" target="_blank">
+    <img src="./assets/method.png" alt="Method Diagram" width="100%">
+  </a>
+
+  <p><strong>Figure 1:</strong> Overview of SWE-Search showing the tree search process, where states (nodes) and actions (edges) are evaluated using contextual information and value function feedback to guide expansion.</p>
+</div>
+
+<div align="center">
+
+</div>
+
+## Installation
+
+1. Clone the repository and create a conda environment:
+
+```bash
+git clone https://github.com/aorwall/moatless-tree-search.git
+cd moatless-tree-search
+conda create -n moatless python=3.11
+conda activate moatless
+```
+
+2. Install Poetry (if not already installed):
+
+```bash
+conda install -c conda-forge poetry
+```
+
+3. Install dependencies using Poetry:
+    
+```bash
+poetry install
+```
+
+## Environment Setup
+
+Before running the evaluation, you'll need to set up your environment variables. Add these to your `~/.bashrc` (bash) or `~/.zshrc` (zsh):
+
+```bash
+# Base URL for custom LLM API service (optional)
+export CUSTOM_LLM_API_BASE="<your-base-url>"
+export CUSTOM_LLM_API_KEY="<your-key>"
+
+# API keys for various LLM providers
+export OPENAI_API_KEY="<your-key>"
+export ANTHROPIC_API_KEY="<your-key>"
+export HUGGINGFACE_API_KEY="<your-key>"
+export DEEPSEEK_API_KEY="<your-key>"
+
+# API Keys for Voyage Embeddings
+export VOYAGE_API_KEY="<your-key>"
+export INDEX_STORE_DIR="<your-index-store-dir>" # default: /tmp/index_store
+
+# Testbed configuration for evaluation environment
+export TESTBED_API_KEY="<your-key>"
+export TESTBED_BASE_URL="<your-base-url>"
+```
 
 
-<a href="assets/method.pdf" target="_blank">
-  <img src="./assets/method.png" alt="Method Diagram" width="100%">
-</a>
+## Streamlit
 
+To launch the Streamlit app, run:
 
+```bash
+streamlit run streamlit_app.py
+```
+
+The following badges are used to indicate the status of a node:
+
+| Badge | Shape | Color | Description |
+|-------|-------|-------|-------------|
+| ⭐ | Star | Green | Node is marked as resolved |
+| ❌ | X | Red | Node is either unresolved or has warnings |
+| 🟢 | Circle | Green | Found correct spans in the right context |
+| 🟡 | Circle | Yellow | Either:<br>• Found files but not spans<br>• Found spans but in wrong files<br>• Found right files (patch status) |
+
+## Evaluation
+
+To run the evaluation script, use the following command:
+
+```bash
+python ./moatless/benchmark/run_evaluation.py \
+        --model "gpt-4o-mini-2024-07-18" \
+        --repo_base_dir $MOATLESS_REPO_BASE_DIR \
+        --eval_dir $MOATLESS_EVAL_DIR \
+        --eval_dir "./evaluations" \
+        --eval_name mts \
+        --temp 0.7 \
+        --num_workers 1 \
+        --feedback \
+        --max_iterations 100 \
+        --max_expansions 5
+```
+
+You can optionally set the `--instance_id` to evaluate on a specific instance or a list of instances.
 
 ## Description of the Flow
 The search algorithm operates in a loop, following these main steps to explore and evaluate possible actions:
