@@ -4,7 +4,7 @@ from typing import Optional, Dict, Any, List
 
 from pydantic import BaseModel, Field
 
-from moatless.agent.agent import Agent
+from moatless.agent.agent import ActionAgent
 from moatless.completion.model import Usage
 from moatless.discriminator import MeanAwardDiscriminator
 from moatless.feedback import FeedbackGenerator
@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 class SearchTree(BaseModel):
     root: Node = Field(..., description="The root node of the search tree.")
     selector: Selector = Field(..., description="Selector for node selection.")
-    agent: Agent = Field(..., description="Agent for generating actions.")
+    agent: ActionAgent = Field(..., description="Agent for generating actions.")
     value_function: Optional[ValueFunction] = Field(
         None, description="Value function for reward calculation."
     )
@@ -70,7 +70,7 @@ class SearchTree(BaseModel):
         root: Optional[Node] = None,
         file_context: Optional[FileContext] = None,
         selector: Optional[Selector] = None,
-        agent: Optional[Agent] = None,
+        agent: Optional[ActionAgent] = None,
         value_function: Optional[ValueFunction] = None,
         feedback_generator: Optional[FeedbackGenerator] = None,
         discriminator: Optional[MeanAwardDiscriminator] = None,
@@ -128,7 +128,7 @@ class SearchTree(BaseModel):
                     raise ValueError(f"Unknown selector type: {selector_type}")
 
             if "agent" in obj and isinstance(obj["agent"], dict):
-                obj["agent"] = Agent.model_validate(obj["agent"])
+                obj["agent"] = ActionAgent.model_validate(obj["agent"])
 
             if "value_function" in obj and isinstance(obj["value_function"], dict):
                 obj["value_function"] = ValueFunction.model_validate(
@@ -167,7 +167,7 @@ class SearchTree(BaseModel):
 
         if "agent" in data and isinstance(data["agent"], dict):
             agent_data = data["agent"]
-            data["agent"] = Agent.model_validate(agent_data, repository=repository, code_index=code_index, runtime=runtime)
+            data["agent"] = ActionAgent.model_validate(agent_data, repository=repository, code_index=code_index, runtime=runtime)
         return cls.model_validate(data, repository)
 
     @classmethod

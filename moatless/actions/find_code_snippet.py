@@ -1,7 +1,7 @@
 import logging
 from typing import Optional, Type, ClassVar
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from moatless.actions.model import ActionArguments
 from moatless.actions.search_base import SearchBaseAction, SearchBaseArgs
@@ -21,6 +21,12 @@ class FindCodeSnippetArgs(SearchBaseArgs):
 
     class Config:
         title = "FindCodeSnippet"
+
+    @model_validator(mode='after')
+    def validate_snippet(self) -> 'FindCodeSnippetArgs':
+        if not self.code_snippet.strip():
+            raise ValueError("code_snippet cannot be empty")
+        return self
 
     def to_prompt(self):
         prompt = f"Searching for code snippet: {self.code_snippet}"

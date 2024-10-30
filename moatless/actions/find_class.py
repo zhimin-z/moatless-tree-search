@@ -1,7 +1,7 @@
 import logging
 from typing import List, Type, ClassVar
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from moatless.actions.model import ActionArguments
 from moatless.actions.search_base import SearchBaseAction, SearchBaseArgs
@@ -17,6 +17,12 @@ class FindClassArgs(SearchBaseArgs):
     class_name: str = Field(
         ..., description="Specific class name to include in the search."
     )
+
+    @model_validator(mode='after')
+    def validate_names(self) -> 'FindClassArgs':
+        if not self.class_name.strip():
+            raise ValueError("class_name cannot be empty")
+        return self
 
     class Config:
         title = "FindClass"
