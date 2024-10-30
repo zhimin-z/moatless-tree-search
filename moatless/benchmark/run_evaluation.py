@@ -7,7 +7,12 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from moatless.benchmark.evaluation import create_evaluation_name, Evaluation, TreeSearchSettings, ModelSettings
+from moatless.benchmark.evaluation import (
+    create_evaluation_name,
+    Evaluation,
+    TreeSearchSettings,
+    ModelSettings,
+)
 
 logger = logging.getLogger(__name__)
 
