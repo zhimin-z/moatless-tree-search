@@ -264,8 +264,8 @@ def update_visualization(container, search_tree: SearchTree, selected_tree_path:
                 if node_info.get("type") == "node":
                     badge = decide_badge(node_info)
                     if badge:
-                        badge_x.append(x + 0.02)  # Offset slightly to the right
-                        badge_y.append(y + 0.03)  # Offset slightly up
+                        badge_x.append(x + 0.04)  # Increased offset to the right
+                        badge_y.append(y + 0.04)  # Increased offset upward
                         badge_symbols.append(badge[0])
                         badge_colors.append(badge[1])
 
@@ -325,16 +325,16 @@ def update_visualization(container, search_tree: SearchTree, selected_tree_path:
                         extra += "<br>".join(node_info["warnings"])
 
                         badge = ("diamond", "red")
-                        badge_x.append(x + 0.02)  # Offset slightly to the right
-                        badge_y.append(y + 0.03)  # Offset slightly up
+                        badge_x.append(x + 0.04)  # Increased offset to the right
+                        badge_y.append(y + 0.04)  # Increased offset upward
                         badge_symbols.append(badge[0])
                         badge_colors.append(badge[1])
                     elif node_info.get("expected_span_identified") or node_info.get(
                         "alternative_span_identified"
                     ):
                         badge = ("star", "gold")
-                        badge_x.append(x + 0.02)  # Offset slightly to the right
-                        badge_y.append(y + 0.03)  # Offset slightly up
+                        badge_x.append(x + 0.04)  # Increased offset to the right
+                        badge_y.append(y + 0.04)  # Increased offset upward
                         badge_symbols.append(badge[0])
 
                     node_text.append(extra)
