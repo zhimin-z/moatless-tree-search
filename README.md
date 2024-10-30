@@ -1,6 +1,8 @@
 # Moatless Tree Search 
 
-Note: The original development code can be found at [https://github.com/a-antoniades/swe-planner](https://github.com/a-antoniades/swe-planner). It is only intended for reproducing the results in the paper. This is a clean refactor with a modular design, which will be extended and actively maintained.
+### Code for paper [SWE-Search: Enhancing Software Agents with Monte Carlo Tree Search and Iterative Refinement](https://arxiv.org/html/2410.20285v1)
+
+Note: The original development code can be found at [https://github.com/a-antoniades/swe-planner](https://github.com/a-antoniades/swe-planner). It is only intended for reproducing the results in the paper. This is a clean refactor with a modular design, which will be maintained and extended.
 
 <div align="center">
 
@@ -16,7 +18,7 @@ Note: The original development code can be found at [https://github.com/a-antoni
     <img src="./assets/method.png" alt="Method Diagram" width="75%">
   </a>
 
-  <p><strong>Figure 1:</strong> Overview of SWE-Search showing the tree search process, where states (nodes) and actions (edges) are evaluated using contextual information and value function feedback to guide expansion.</p>
+  <p><strong>Overview of SWE-Search showing the tree search process, where states (nodes) and actions (edges) are evaluated using contextual information and value function feedback to guide expansion.</p>
 </div>
 
 ## Installation
@@ -51,7 +53,7 @@ Before running the evaluation, you'll need to set up your environment variables.
 export CUSTOM_LLM_API_BASE="<your-base-url>"
 export CUSTOM_LLM_API_KEY="<your-key>"
 
-# API keys for various LLM providers
+# API keys for various LLM providers (set the ones you need)
 export OPENAI_API_KEY="<your-key>"
 export ANTHROPIC_API_KEY="<your-key>"
 export HUGGINGFACE_API_KEY="<your-key>"
@@ -61,7 +63,7 @@ export DEEPSEEK_API_KEY="<your-key>"
 export VOYAGE_API_KEY="<your-key>"
 export INDEX_STORE_DIR="<your-index-store-dir>" # default: /tmp/index_store
 
-# Testbed configuration for evaluation environment
+# Configuration for test environment (if using the testbed)
 export TESTBED_API_KEY="<your-key>"
 export TESTBED_BASE_URL="<your-base-url>"
 ```
@@ -80,9 +82,9 @@ The following badges are used to indicate the status of a node:
 | Badge | Shape | Color | Description |
 |-------|-------|-------|-------------|
 | ⭐ | Star | Green | Node is marked as resolved |
-| ❌ | X | Red | Node is either unresolved or has warnings |
-| 🟢 | Circle | Green | Found correct spans in the right context |
-| 🟡 | Circle | Yellow | Either:<br>• Found files but not spans<br>• Found spans but in wrong files<br>• Found right files (patch status) |
+| ❌ | X | Red | Invalid edits or failed tests |
+| 🟢 | Circle | Green | Correct code spans present in the context |
+| 🟡 | Circle | Yellow | Either:<br>• Found files but not spans<br>• Found spans but in wrong files<br>|
 
 ## Evaluation
 
