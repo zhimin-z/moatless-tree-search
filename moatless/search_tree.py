@@ -53,6 +53,10 @@ class SearchTree(BaseModel):
         None,
         description="The minimum number of finished nodes to consider before finishing",
     )
+    max_finished_nodes: Optional[int] = Field(
+        None,
+        description="The maximum number of finished nodes to consider before finishing",
+    )
     reward_threshold: Optional[float] = Field(
         None, description="The min reward threshold to consider before finishing."
     )
@@ -80,6 +84,7 @@ class SearchTree(BaseModel):
         max_iterations: int = 10,
         max_cost: Optional[float] = None,
         min_finished_nodes: Optional[int] = None,
+        max_finished_nodes: Optional[int] = None,
         reward_threshold: Optional[float] = None,
         max_depth: int = 10,
     ) -> "SearchTree":
@@ -109,6 +114,7 @@ class SearchTree(BaseModel):
             max_iterations=max_iterations,
             max_cost=max_cost,
             min_finished_nodes=min_finished_nodes,
+            max_finished_nodes=max_finished_nodes,
             reward_threshold=reward_threshold,
             max_depth=max_depth,
         )
@@ -311,6 +317,9 @@ class SearchTree(BaseModel):
             return False
 
         if self.min_finished_nodes and len(finished_nodes) >= self.min_finished_nodes:
+            return True
+        
+        if self.max_finished_nodes and len(finished_nodes) >= self.max_finished_nodes:
             return True
 
         if not self.root.get_expandable_descendants():

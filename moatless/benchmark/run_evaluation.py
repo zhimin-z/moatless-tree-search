@@ -123,9 +123,6 @@ if __name__ == "__main__":
     if args.eval_name is not None:
         log_filename = f"run_evaluation_{args.eval_name}_{current_time}.log"
         error_log_filename = f"run_evaluation_{args.eval_name}_{current_time}_error.log"
-    elif args.name is not None:
-        log_filename = f"run_evaluation_{args.name}_{current_time}.log"
-        error_log_filename = f"run_evaluation_{args.name}_{current_time}_error.log"
     else:
         log_filename = f"run_evaluation_{current_time}.log"
         error_log_filename = f"run_evaluation_{current_time}_error.log"
@@ -199,7 +196,6 @@ if __name__ == "__main__":
     evaluate_search_and_code(
         evaluation_name=args.eval_name,
         evaluations_dir=args.eval_dir,
-        name=args.name,
         repo_base_dir=args.repo_base_dir,
         tree_search_settings=tree_search_settings,
         instance_ids=args.instance_ids,
