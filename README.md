@@ -2,23 +2,21 @@
 
 Note: The original development code can be found at [https://github.com/a-antoniades/swe-planner](https://github.com/a-antoniades/swe-planner). It is only intended for reproducing the results in the paper. This is a clean refactor which will be extended and actively maintained.
 
-![License](https://img.shields.io/badge/LICENSE-APACHE_LICENSE_2.0-yellow?style=flat-square&labelColor=lightgrey)
-![arXiv](https://img.shields.io/badge/arXiv-2408.08435-B31B1B?style=flat-square)
-![Streamlit](https://img.shields.io/badge/WEBSITE-brown?style=flat-square)
-![Twitter](https://img.shields.io/badge/TWITTER-00ACEE?style=flat-square)
-![YouTube](https://img.shields.io/badge/YOUTUBE-FF0000?style=flat-square)
-
-
 <div align="center">
-  <a href="assets/method.pdf" target="_blank">
-    <img src="./assets/method.png" alt="Method Diagram" width="100%">
-  </a>
 
-  <p><strong>Figure 1:</strong> Overview of SWE-Search showing the tree search process, where states (nodes) and actions (edges) are evaluated using contextual information and value function feedback to guide expansion.</p>
+[![License](https://img.shields.io/badge/LICENSE-APACHE_LICENSE_2.0-yellow?style=flat-square&labelColor=lightgrey)](./LICENSE)
+[![arXiv](https://img.shields.io/badge/arXiv-2408.08435-B31B1B?style=flat-square)](https://arxiv.org/html/2410.20285v1)
+[![Streamlit](https://img.shields.io/badge/STREAMLIT-7C4DFF?style=flat-square)](https://streamlit.moatless.ai/)
+[![Twitter](https://img.shields.io/badge/TWITTER-00ACEE?style=flat-square)](https://twitter.com/your-handle)
+[![YouTube](https://img.shields.io/badge/YOUTUBE-FF0000?style=flat-square)](https://www.youtube.com/watch?v=VcEHX_TNDgQ)
 </div>
 
 <div align="center">
+  <a href="assets/method.pdf" target="_blank">
+    <img src="./assets/method.png" alt="Method Diagram" width="75%">
+  </a>
 
+  <p><strong>Figure 1:</strong> Overview of SWE-Search showing the tree search process, where states (nodes) and actions (edges) are evaluated using contextual information and value function feedback to guide expansion.</p>
 </div>
 
 ## Installation
