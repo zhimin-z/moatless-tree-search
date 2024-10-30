@@ -7,7 +7,7 @@ from moatless.actions.finish import Finish
 from moatless.actions.reject import Reject
 from moatless.actions.request_context import RequestMoreContext
 from moatless.actions.run_tests import RunTests
-from moatless.agent.agent import Agent
+from moatless.agent.agent import ActionAgent
 from moatless.agent.code_prompts import SYSTEM_PROMPT, FEW_SHOT_JSON
 from moatless.completion.completion import (
     LLMResponseFormat,
@@ -17,7 +17,7 @@ from moatless.node import Node
 logger = logging.getLogger(__name__)
 
 
-class CodingAgent(Agent):
+class CodingAgent(ActionAgent):
     def _create_system_prompt(self, possible_actions: List[Type[Action]]) -> str:
         if self.system_prompt:
             return self.system_prompt

@@ -61,6 +61,17 @@ class ModelSettings(BaseModel):
     )
 
 
+class DebateSettings(BaseModel):
+    n_agents: int = Field(
+        8,
+        description="The number of agents to debate the rewards to transitions.",
+    )
+    n_rounds: int = Field(
+        3,
+        description="The number of rounds to debate the rewards to transitions.",
+    )
+
+
 class TreeSearchSettings(BaseModel):
     max_expansions: int = Field(
         3,
@@ -141,14 +152,9 @@ class TreeSearchSettings(BaseModel):
         description="The maximum depth for one trajectory in simulations.",
     )
 
-class DebateSettings(BaseModel):
-    n_agents: int = Field(
-        8,
-        description="The number of agents to debate the rewards to transitions.",
-    )
-    n_rounds: int = Field(
-        3,
-        description="The number of rounds to debate the rewards to transitions.",
+    debate_settings: DebateSettings | None = Field(
+        None,
+        description="The settings for the debate.",
     )
 
 
@@ -342,7 +348,7 @@ class Evaluation:
                 code_index = create_index(instance, repository=repository)
 
                 if self.use_testbed:
-                    from testbed.sdk import TestbedSDK
+                    from testbeds.sdk import TestbedSDK
                     from moatless.runtime.testbed import TestbedEnvironment
                     runtime = TestbedEnvironment(
                         testbed_sdk=TestbedSDK(),
@@ -387,7 +393,6 @@ class Evaluation:
                         feedback = None
 
                     discriminator = MeanAwardDiscriminator()
-                    file_context = FileContext(repo=repository)
 
                     file_context = FileContext(repo=repository)
 
@@ -442,7 +447,7 @@ class Evaluation:
 
                     if not runtime:
                         repository = create_repository(instance, repo_base_dir=self.repo_base_dir)
-                        from testbed.sdk import TestbedSDK
+                        from testbeds.sdk import TestbedSDK
                         from moatless.runtime.testbed import TestbedEnvironment
                         runtime = TestbedEnvironment(
                             testbed_sdk=TestbedSDK(),
@@ -524,11 +529,6 @@ class Evaluation:
             # Clean up
             if repository:
                 shutil.rmtree(repository.repo_dir, ignore_errors=True)
-            if runtime and runtime.testbed:
-                try:
-                    runtime.testbed.destroy()
-                except Exception:
-                    logger.exception("Error deleting testbed")
 
             del runtime
             del repository

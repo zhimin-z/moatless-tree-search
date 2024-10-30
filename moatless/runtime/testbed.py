@@ -11,8 +11,8 @@ from moatless.file_context import RankedFileSpan, FileContext
 from moatless.repository import GitRepository
 from moatless.repository.repository import Repository
 from moatless.runtime.runtime import TestResult, TestStatus
-from testbed.schema import EvaluationResult, TraceItem
-from testbed.sdk import TestbedSDK
+from testbeds.schema import EvaluationResult, TraceItem
+from testbeds.sdk import TestbedSDK
 
 logger = logging.getLogger(__name__)
 
@@ -34,11 +34,6 @@ class TestbedEnvironment(RuntimeEnvironment):
         self.tests_to_ignore = []
         self.log_dir = log_dir
 
-        # Create a testbed on initation to warm up the environment
-        self.testbed = self.testbed_sdk.create_client(
-            instance_id=self.instance["instance_id"]
-        )
-
     @classmethod
     def from_instance(cls, instance: dict, repository: GitRepository, **kwargs):
         return cls(
@@ -57,50 +52,47 @@ class TestbedEnvironment(RuntimeEnvironment):
         log_content += f"\n\n# Patch:\n```diff\n{patch}\n```"
 
         try:
-            if not self.testbed:
-                self.testbed = self.testbed_sdk.create_client(
-                    instance_id=self.instance["instance_id"]
-                )
+            with self.testbed_sdk.create_client(instance_id=self.instance["instance_id"]) as testbed:
+                response = testbed.run_tests(test_files=test_files, patch=patch)
 
-            response = self.testbed.run_tests(test_files=test_files, patch=patch)
+                if response.output:
+                    log_content += f"\n\n## Log:\n{response.output}\n"
 
-            if response.output:
-                log_content += f"\n\n## Log:\n{response.output}\n"
+                if response.test_results:
+                    log_content += f"\n\n## Testbed test results:"
+                    test_results_json = response.model_dump_json(
+                        exclude={"output"}, indent=2
+                    )
+                    log_content += f"```json\n{test_results_json}\n```"
 
-            if response.test_results:
-                log_content += f"\n\n## Testbed test results:"
-                test_results_json = response.model_dump_json(
-                    exclude={"output"}, indent=2
-                )
-                log_content += f"```json\n{test_results_json}\n```"
+                # Ignore tests that fails before any changes were made
+                if not patch:
+                    self.tests_to_ignore = [
+                        test.name
+                        for test in response.test_results
+                        if test.status in ["ERROR", "FAILED"]
+                    ]
+                    if self.tests_to_ignore and self.log_dir:
+                        log_content += f"\n\n## Ignored tests:\n{self.tests_to_ignore}"
+                        with open(f"{self.log_dir}/ignored_tests.json", "w") as f:
+                            json.dump(self.tests_to_ignore, f)
 
-            # Ignore tests that fails before any changes were made
-            if not patch:
-                self.tests_to_ignore = [
-                    test.name
+                test_results = [
+                    test
                     for test in response.test_results
-                    if test.status in ["ERROR", "FAILED"]
+                    if test.name not in self.tests_to_ignore
                 ]
-                if self.tests_to_ignore and self.log_dir:
-                    log_content += f"\n\n## Ignored tests:\n{self.tests_to_ignore}"
-                    with open(f"{self.log_dir}/ignored_tests.json", "w") as f:
-                        json.dump(self.tests_to_ignore, f)
 
-            test_results = [
-                test
-                for test in response.test_results
-                if test.name not in self.tests_to_ignore
-            ]
+                mapped_results = self._map_test_results_to_issues(test_results)
 
-            mapped_results = self._map_test_results_to_issues(test_results)
+                if mapped_results:
+                    dicts = [result.model_dump() for result in mapped_results]
+                    for dict in dicts:
+                        dict["status"] = dict["status"].value
+                    log_content += f"\n\n## Mapped test results:\n```json\n{json.dumps(dicts, indent=2)}\n```"
 
-            if mapped_results:
-                dicts = [result.model_dump() for result in mapped_results]
-                for dict in dicts:
-                    dict["status"] = dict["status"].value
-                log_content += f"\n\n## Mapped test results:\n```json\n{json.dumps(dicts, indent=2)}\n```"
+                return mapped_results
 
-            return mapped_results
         except Exception as e:
             logger.exception(f"Error running tests {test_files}")
             log_content += f"\n\n## Error:\n{e}"
@@ -110,12 +102,6 @@ class TestbedEnvironment(RuntimeEnvironment):
             log_content += f"\n\n# Traceback:\n{traceback}"
             return []
         finally:
-            if self.testbed:
-                try:
-                    self.testbed.destroy()
-                    self.testbed = None
-                except Exception as e:
-                    logger.error(f"Error destroying testbed client: {e}")
             if self.log_dir:
                 datetime_str = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
                 with open(f"{self.log_dir}/{datetime_str}_test_run.md", "w") as f:
@@ -134,24 +120,19 @@ class TestbedEnvironment(RuntimeEnvironment):
         log_content += f"Test files: {test_patch_files}"
 
         try:
-            if not self.testbed:
-                self.testbed = self.testbed_sdk.create_client(
-                    instance_id=self.instance["instance_id"]
-                )
+            with self.testbed_sdk.create_client(instance_id=self.instance["instance_id"]) as testbed:
+                if not patch.endswith("\n"):
+                    patch += "\n"
 
-            if not patch.endswith("\n"):
-                patch += "\n"
+                log_content += f"\n\n# Patch:\n```diff\n{patch}\n```"
 
-            log_content += f"\n\n# Patch:\n```diff\n{patch}\n```"
+                evaluation_result = testbed.run_evaluation(patch=patch)
 
-            evaluation_result = self.testbed.run_evaluation(patch=patch)
+                if evaluation_result.output:
+                    log_content += f"\n\n## Log:\n```\n{evaluation_result.output}\n```\n"
 
-            if evaluation_result.output:
-                log_content += f"\n\n## Log:\n```\n{evaluation_result.output}\n```\n"
-
-            log_content += f"\n\n## Evaluation result:\n```json\n{evaluation_result.model_dump_json(indent=2)}\n```"
-            return evaluation_result
-
+                log_content += f"\n\n## Evaluation result:\n```json\n{evaluation_result.model_dump_json(indent=2)}\n```"
+                return evaluation_result
         except Exception as e:
             logger.exception("Error running evaluation")
             log_content += f"\n\n## Error:\n{e}"
@@ -164,12 +145,7 @@ class TestbedEnvironment(RuntimeEnvironment):
                 datetime_str = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
                 with open(f"{self.log_dir}/{datetime_str}_evaluation.md", "w") as f:
                     f.write(log_content)
-            if self.testbed:
-                try:
-                    self.testbed.destroy()
-                    self.testbed = None
-                except Exception as e:
-                    logger.error(f"Error destroying testbed client: {e}")
+
         return None
 
     def _get_code_block(self, file_path: str, line_number: int):

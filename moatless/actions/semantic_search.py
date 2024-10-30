@@ -1,6 +1,6 @@
 from typing import Optional, List, Type, ClassVar
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from moatless.actions.model import ActionArguments
 from moatless.actions.search_base import SearchBaseAction, SearchBaseArgs
@@ -26,6 +26,12 @@ class SemanticSearchArgs(SearchBaseArgs):
         if self.file_pattern:
             prompt += f" in files matching the pattern: {self.file_pattern}"
         return prompt
+
+    @model_validator(mode='after')
+    def validate_query(self) -> 'SemanticSearchArgs':
+        if not self.query.strip():
+            raise ValueError("query cannot be empty")
+        return self
 
 
 class SemanticSearch(SearchBaseAction):

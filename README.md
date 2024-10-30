@@ -91,10 +91,9 @@ The following badges are used to indicate the status of a node:
 To run the evaluation script, use the following command:
 
 ```bash
-python ./moatless/benchmark/run_evaluation.py \
+python -m moatless.benchmark.run_evaluation \
         --model "gpt-4o-mini-2024-07-18" \
-        --repo_base_dir $MOATLESS_REPO_BASE_DIR \
-        --eval_dir $MOATLESS_EVAL_DIR \
+        --repo_base_dir /tmp/repos \ 
         --eval_dir "./evaluations" \
         --eval_name mts \
         --temp 0.7 \
@@ -125,146 +124,137 @@ The search algorithm operates in a loop, following these main steps to explore a
 
 When the search process finishes (based on predefined stopping criteria), the algorithm determines the best solution found using a `Discriminator`, which assesses the nodes based on their rewards and other factors.
 
-### Node
-   
-```python
-class Node(BaseModel):
-    node_id: int = Field(..., description="The unique identifier of the node")
-    parent: Optional['Node'] = Field(None, description="The parent node")
-    children: List['Node'] = Field(default_factory=list, description="The child nodes")
-    is_duplicate: bool = Field(False, description="Flag to indicate if the node is a duplicate")
-    action: Optional[ActionArguments] = Field(None, description="The action associated with the node")
-    observation: Optional[Observation] = Field(None, description="The observation from the executed action")
-    reward: Optional[Reward] = Field(None, description="The reward of the node")
-    visits: int = Field(0, description="The number of times the node has been visited")
-    value: float = Field(0.0, description="The total value (reward) of the node")
-    file_context: Optional[FileContext] = Field(None, description="The file context state associated with the node")
-    message: Optional[str] = Field(None, description="The message associated with the node")
-    feedback: Optional[str] = Field(None, description="Feedback provided to the node")
-    completions: Dict[str, Completion] = Field(default_factory=dict, description="The completions used in this node")
-``` 
-
-### Selector
+## Example: Basic Flow
+Basic setup similar to the moatless-tools agent.
 
 ```python
-class Selector(ABC):
-    @abstractmethod
-    def select(self, nodes: List[Node]) -> Optional[Node]:
-        """
-        Selects the next node to expand from a list of candidate nodes.
+from moatless.benchmark.swebench import load_instance, create_repository
+from moatless.completion.completion import CompletionModel
+from moatless.index import CodeIndex
+from moatless.search_tree import SearchTree
+from moatless.templates import create_basic_coding_tree
+from moatless.actions import FindClass, FindFunction, FindCodeSnippet, SemanticSearch, RequestMoreContext, RequestCodeChange, Finish, Reject
 
-        Args:
-            nodes (List[Node]): A list of candidate nodes to select from.
+index_store_dir = "/tmp/index_store"
 
-        Returns:
-            Optional[Node]: The selected node, or None if no suitable node is found.
-        """
-        pass
+completion_model = CompletionModel(model="gpt-4o", temperature=0.0)
+
+repository = create_repository(instance)
+
+code_index = CodeIndex.from_index_name(
+    instance["instance_id"], index_store_dir=index_store_dir, file_repo=repository
+)
+
+actions = [
+    find_class = FindClass(code_index=code_index, repository=repository)
+    find_function = FindFunction(code_index=code_index, repository=repository)
+    find_code_snippet = FindCodeSnippet(code_index=code_index, repository=repository)
+    semantic_search = SemanticSearch(code_index=code_index, repository=repository)
+    request_context = RequestMoreContext(repository=repository)
+    request_code_change = RequestCodeChange(
+        repository=repository, completion_model=completion_model
+    )
+    finish = Finish()
+    reject = Reject()
+]
+
+file_context = FileContext(repo=repository)
+agent = CodingAgent(actions=actions, completion=completion_model, system_prompt=SIMPLE_CODE_PROMPT)
+
+instance = load_instance("django__django-16379")
+
+search_tree = SearchTree.create(
+    message=instance["problem_statement"],
+    agent=agent,
+    file_context=file_context,
+    max_expansions=1,
+    max_iterations=50
+)
+
+node = search_tree.run_search()
+print(node.observation.message)
 ```
 
-### Agent
-Responsible for generating and executing actions:
+### Example: MCTS Flow
+
+Evaluation flow with MCTS and testbeds.
+
 
 ```python
-class Agent(BaseModel):
-    def run(self, node: Node):
-        self._generate_action(node)
-        self._execute_action(node)
+from moatless.benchmark.swebench import load_instance, create_repository
+from moatless.completion.completion import CompletionModel
+from moatless.index import CodeIndex
+from moatless.search_tree import SearchTree
+from moatless.templates import create_basic_coding_tree
+from moatless.actions import FindClass, FindFunction, FindCodeSnippet, SemanticSearch, RequestMoreContext, RequestCodeChange, Finish, Reject
+from testbeds.sdk import TestbedSDK
+from moatless.runtime.testbed import TestbedEnvironment
+
+index_store_dir = "/tmp/index_store"
+
+completion_model = CompletionModel(model="gpt-4o-mini", temperature=0.0)
+
+repository = create_repository(instance)
+
+code_index = CodeIndex.from_index_name(
+    instance["instance_id"], index_store_dir=index_store_dir, file_repo=repository
+)
+
+
+file_context = FileContext(repo=repository)
+
+
+selector = BestFirstSelector()
+
+value_function = ValueFunction(completion=completion_model)
+
+discriminator = AgentDiscriminator(
+    create_completion=self._create_completion_model(),
+    debate_settings=DebateSettings(
+        n_agents=self.settings.debate_n_agents,
+        n_rounds=self.settings.debate_n_rounds,
+    )
+)
+
+feedback = FeedbackGenerator()
+
+instance = load_instance("django__django-16379")
+
+runtime = TestbedEnvironment(
+    testbed_sdk=TestbedSDK(),
+    repository=repository,
+    instance=instance
+)
+
+actions = [
+    find_class = FindClass(code_index=code_index, repository=repository)
+    find_function = FindFunction(code_index=code_index, repository=repository)
+    find_code_snippet = FindCodeSnippet(code_index=code_index, repository=repository)
+    semantic_search = SemanticSearch(code_index=code_index, repository=repository)
+    request_context = RequestMoreContext(repository=repository)
+    request_code_change = RequestCodeChange(
+        repository=repository, completion_model=completion_model
+    )
+    run_tests = RunTests(code_index=code_index, repository=repository, runtime=runtime)
+    finish = Finish()
+    reject = Reject()
+]
+
+agent = CodingAgent(actions=actions, completion=completion_model)
+
+search_tree = SearchTree.create(
+    message=instance["problem_statement"],
+    agent=agent,
+    file_context=file_context,
+    selector=selector,
+    value_function=value_function,
+    discriminator=discriminator,
+    feedback_generator=feedback,
+    max_iterations=100,
+    max_expansions=5,
+    max_depth=25,
+)
+
+node = search_tree.run_search()
+print(node.observation.message)
 ```
-
-### Action
-Defines the structure and execution logic for different types of actions:
-
-```python
-class Action(BaseModel, ABC):
-    args_schema: Type[ActionArguments]
-
-    def execute(self, args: ActionArguments, file_context: FileContext) -> Observation:
-        message = self._execute(file_context=file_context)
-        return Observation.create(message)
-```
-
-### ActionArguments
-Defines the arguments required for each action type:
-
-```python
-class ActionArguments(OpenAISchema, ABC):
-    scratch_pad: str = Field(..., description="Your reasoning for the action.")
-```
-
-### Observation
-Represents the result of an action execution:
-
-```python
-class Observation(BaseModel):
-    message: str
-    extra: Optional[str] = None
-    terminal: bool = False
-    expect_correction: bool = False
-    properties: Optional[Dict[str, Any]] = None
-    execution_completion: Optional[Completion] = None
-```
-
-### ValueFunction
-
-```python
-class ValueFunction(ABC):
-    @abstractmethod
-    def get_reward(self, node: Node) -> Reward:
-        """
-        Evaluates the node's outcome and assigns a reward.
-
-        Args:
-            node (Node): The node to evaluate.
-
-        Returns:
-            Reward: The calculated reward
-        """
-        pass
-``` 
-
-#### Reward
-
-```python
-class Reward(OpenAISchema):
-    explanation: Optional[str] = Field(None, description="An explanation and the reasoning behind your decision.")
-    feedback: Optional[str] = Field(None, description="Feedback to the alternative branch.")
-    value: int = Field(..., description="As ingle integer value between -100 and 100 based on your confidence in the correctness of the action and its likelihood of resolving the issue")
-``` 
-
-### FeedbackGenerator
-
-```python
-
-class FeedbackGenerator(ABC):
-    @abstractmethod
-    def generate_feedback(self, node: Node) -> str:
-        """
-        Generates feedback for a given node to inform the next action.
-
-        Args:
-            node (Node): The node for which to generate feedback.
-
-        Returns:
-            str: The feedback message to be used in action building.
-        """
-        pass
-``` 
-
-### Discriminator
-
-```python
-class Discriminator(ABC):
-    @abstractmethod
-    def select(self, nodes: List['Node']) -> Optional['Node']:
-        """
-        Selects the best node from a list of nodes based on specific criteria.
-
-        Args:
-            nodes (List[Node]): A list of nodes to evaluate.
-
-        Returns:
-            Optional[Node]: The node deemed the best, or None if no suitable node is found.
-        """
-        pass
-``` 

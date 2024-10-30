@@ -17,7 +17,7 @@ from moatless.repository.repository import Repository
 logger = logging.getLogger(__name__)
 
 
-class Agent(BaseModel):
+class ActionAgent(BaseModel):
     system_prompt: Optional[str] = Field(
         None, description="System prompt to be used for generating completions"
     )
@@ -203,7 +203,7 @@ class Agent(BaseModel):
         return dump
 
     @classmethod
-    def model_validate(cls, obj: Any, repository: Repository = None, runtime: Any = None, code_index: CodeIndex = None) -> "Agent":
+    def model_validate(cls, obj: Any, repository: Repository = None, runtime: Any = None, code_index: CodeIndex = None) -> "ActionAgent":
         if isinstance(obj, dict):
             obj = obj.copy()
             completion_data = obj.pop("completion", None)
