@@ -1,6 +1,6 @@
 # Moatless-Tree-Search 
 
-Note: The original development code can be found at [https://github.com/a-antoniades/swe-planner](https://github.com/a-antoniades/swe-planner). It is only intended for reproducing the results in the paper. This is a clean refactor which will be extended and actively maintained.
+Note: The original development code can be found at [https://github.com/a-antoniades/swe-planner](https://github.com/a-antoniades/swe-planner). It is only intended for reproducing the results in the paper. This is a clean refactor with a modular design, which will be extended and actively maintained.
 
 <div align="center">
 
