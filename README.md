@@ -15,10 +15,10 @@ Note: The original development code can be found at [https://github.com/a-antoni
 
 <div align="center">
   <a href="assets/method.pdf" target="_blank">
-    <img src="./assets/method.png" alt="Method Diagram" width="75%">
+    <img src="./assets/method.png" alt="Method Diagram" width="90%">
   </a>
 
-  <p><strong>Overview of SWE-Search showing the tree search process, where states (nodes) and actions (edges) are evaluated using contextual information and value function feedback to guide expansion.</p>
+  <p>Overview of SWE-Search showing the tree search process, where states (nodes) and actions (edges) are evaluated using contextual information and value function feedback to guide expansion.</p>
 </div>
 
 ## Installation
