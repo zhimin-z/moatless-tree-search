@@ -1,12 +1,11 @@
-
 # models
 # claude-3-5-sonnet-20241022
 # gpt-4o-mini-2024-07-18
+# openai/Qwen/Qwen2.5-03B-Instruct
 
-MODEL="claude-3-5-sonnet-20241022"
-PYTHONPATH=$PYTHONPATH:$(pwd)
+MODEL="gpt-4o-mini-2024-07-18"
 CWD=$(pwd)
-echo $CWD
+export PYTHONPATH="${CWD}:${PYTHONPATH}"
 
 python ./moatless/benchmark/run_evaluation.py \
         --model $MODEL \
@@ -16,6 +15,6 @@ python ./moatless/benchmark/run_evaluation.py \
         --temp 0.7 \
         --num_workers 1 \
         --feedback \
-        --instance_id django__django-15252 \
+        --instance_id django__django-11179 \
         --max_iterations 50 \
         --max_expansions 5
