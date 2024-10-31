@@ -13,7 +13,7 @@ Note: The original development code can be found at [github.com/a-antoniades/swe
 [![Streamlit](https://img.shields.io/badge/Demo-Streamlit-FF4B4B.svg?style=flat&logo=streamlit)](https://streamlit.moatless.ai/)
 [![YouTube](https://img.shields.io/badge/Video-YouTube-FF0000.svg?style=flat&logo=youtube)](https://www.youtube.com/watch?v=VcEHX_TNDgQ)
 [![Twitter](https://img.shields.io/badge/Tweet-X-1DA1F2.svg?style=flat&logo=twitter)](https://twitter.com/your-handle)
-[![Discord](https://img.shields.io/badge/DISCORD-7289DA?style=flat-square)](https://discord.gg/74VX8ppBEg)
+[![Discord](https://img.shields.io/badge/👾-Discord-7289DA?style=flat-square)](https://discord.gg/74VX8ppBEg)
 </div>
 
 <div align="center">
