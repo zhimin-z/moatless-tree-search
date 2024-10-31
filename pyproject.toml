@@ -4,13 +4,17 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.poetry]
 name = "moatless-tree-search"
-version = "0.0.01"
+version = "0.0.1"
 description = ""
 authors = [ "Albert Örwall <albert@moatless.ai>", "Antonis Antoniades <antonis@ucsb.edu>"]
 readme = "README.md"
 packages = [
     { include = "moatless" },
 ]
+
+[tool.poetry.scripts]
+moatless-streamlit = "moatless.streamlit.cli:main_run"
+moatless-evaluate = "moatless.benchmark.run_evaluation:main"
 
 [tool.ruff]
 target-version = "py310"
@@ -48,7 +52,7 @@ faiss-cpu = "^1.8.0.post1"
 jsonref = "^1.1.0"
 
 # Testbeds
-moatless-testbeds = "^0.0.2"
+moatless-testbeds = "^0.0.5"
 
 # Visualizations
 scipy = "^1.14.0"

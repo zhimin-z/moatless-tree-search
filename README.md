@@ -13,6 +13,7 @@ Note: The original development code can be found at [github.com/a-antoniades/swe
 [![Streamlit](https://img.shields.io/badge/Demo-Streamlit-FF4B4B.svg?style=flat&logo=streamlit)](https://streamlit.moatless.ai/)
 [![YouTube](https://img.shields.io/badge/Video-YouTube-FF0000.svg?style=flat&logo=youtube)](https://www.youtube.com/watch?v=VcEHX_TNDgQ)
 [![Twitter](https://img.shields.io/badge/Tweet-X-1DA1F2.svg?style=flat&logo=twitter)](https://twitter.com/your-handle)
+[![Discord](https://img.shields.io/badge/DISCORD-7289DA?style=flat-square)](https://discord.gg/74VX8ppBEg)
 </div>
 
 <div align="center">
@@ -25,58 +26,65 @@ Note: The original development code can be found at [github.com/a-antoniades/swe
 
 ## Installation
 
-1. Clone the repository and create a conda environment:
+Install the package:
 
 ```bash
-git clone https://github.com/aorwall/moatless-tree-search.git
-cd moatless-tree-search
-conda create -n moatless python=3.11
-conda activate moatless
+pip install moatless-tree-search
 ```
 
-2. Install Poetry (if not already installed):
+### Environment Setup
 
-```bash
-conda install -c conda-forge poetry
-```
+Before running the evaluation, you'll need:
+1. At least one LLM provider API key (e.g., OpenAI, Anthropic, etc.)
+2. A Voyage AI API key from [voyageai.com](https://voyageai.com) to use the pre-embedded vector stores for SWE-Bench instances.
+3. (Optional) Access to a testbed environment - see [moatless-testbeds](https://github.com/aorwall/moatless-testbeds) for setup instructions
 
-3. Install dependencies using Poetry:
-    
-```bash
-poetry install
-```
+You can configure these settings by either:
 
-## Environment Setup
+1. Create a `.env` file in the project root (copy from `.env.example`):
 
-Before running the evaluation, you'll need to set up your environment variables. Add these to your `~/.bashrc` (bash) or `~/.zshrc` (zsh):
+   ```bash
+   cp .env.example .env
+   # Edit .env with your values
+   ```
 
-```bash
-# Base URL for custom LLM API service (optional)
-export CUSTOM_LLM_API_BASE="<your-base-url>"
-export CUSTOM_LLM_API_KEY="<your-key>"
+2. Or export the variables directly:
+   
+   ```bash
+   # Directory for storing vector index store files  
+   export INDEX_STORE_DIR="/tmp/index_store"    
 
-# API keys for various LLM providers (set the ones you need)
-export OPENAI_API_KEY="<your-key>"
-export ANTHROPIC_API_KEY="<your-key>"
-export HUGGINGFACE_API_KEY="<your-key>"
-export DEEPSEEK_API_KEY="<your-key>"
+   # Directory for storing clonedrepositories 
+   export REPO_DIR="/tmp/repos"
 
-# API Keys for Voyage Embeddings
-export VOYAGE_API_KEY="<your-key>"
-export INDEX_STORE_DIR="<your-index-store-dir>" # default: /tmp/index_store
+   # Required: At least one LLM provider API key
+   export OPENAI_API_KEY="<your-key>"
+   export ANTHROPIC_API_KEY="<your-key>"
+   export HUGGINGFACE_API_KEY="<your-key>"
+   export DEEPSEEK_API_KEY="<your-key>"
 
-# Configuration for test environment (if using the testbed)
-export TESTBED_API_KEY="<your-key>"
-export TESTBED_BASE_URL="<your-base-url>"
-```
+   # ...or Base URL for custom LLM API service (optional)
+   export CUSTOM_LLM_API_BASE="<your-base-url>"
+   export CUSTOM_LLM_API_KEY="<your-key>"
+
+   # Required: API Key for Voyage Embeddings
+   export VOYAGE_API_KEY="<your-key>"
+
+   # Optional: Configuration for testbed environment (https://github.com/aorwall/moatless-testbeds)
+   export TESTBED_API_KEY="<your-key>"
+   export TESTBED_BASE_URL="<your-base-url>"
+   ```
 
 
 ## Streamlit
-
 To launch the Streamlit app, run:
 
 ```bash
-streamlit run streamlit_app.py
+# Launch with direct file loading
+moatless-streamlit path/to/trajectory.json
+
+# Launch interactive UI (file can be selected in browser)
+moatless-streamlit
 ```
 
 The following badges are used to indicate the status of a node:
@@ -90,54 +98,47 @@ The following badges are used to indicate the status of a node:
 
 ## Evaluation
 
-To run the evaluation script, use the following command:
+To run the evaluation script
 
 ```bash
-python -m moatless.benchmark.run_evaluation \
-        --model "gpt-4o-mini-2024-07-18" \
-        --repo_base_dir /tmp/repos \ 
-        --eval_dir "./evaluations" \
-        --eval_name mts \
-        --temp 0.7 \
-        --num_workers 1 \
-        --feedback \
-        --max_iterations 100 \
-        --max_expansions 5
+moatless-evaluate \
+    --model "gpt-4o-mini" \
+    --repo_base_dir /tmp/repos \
+    --eval_dir "./evaluations" \
+    --eval_name mts \
+    --temp 0.7 \
+    --num_workers 1 \
+    --use_testbed \
+    --feedback \
+    --max_iterations 100 \
+    --max_expansions 5
 ```
 
-You can optionally set the `--instance_id` to evaluate on a specific instance or a list of instances.
+You can optionally set the `--instance_ids` to evaluate on a specific instance or a list of instances.
 
-## Description of the Flow
-The search algorithm operates in a loop, following these main steps to explore and evaluate possible actions:
+Use `--use_testbed` if you got access to a testbed environment. Otherwise, tests will not be run.
 
-1. **Selection:** Choose the next `Node` to expand using a `Selector` strategy. The selector evaluates the available nodes (expandable descendants) and selects the most promising one based on predefined criteria.
+## Examples
 
-2. **Expansion:** Create a new child `Node` or select an existing unexecuted child.
-
-3. **Simulation:**
-   * **Action Generation and Execution:** Use the `Agent` to generate and execute an action for the `Node`:
-     - Generate possible actions for the node
-     - Create a system prompt and messages based on the node's history
-     - Use a `CompletionModel` to generate action arguments
-     - Execute the chosen action, updating the node's `FileContext` and creating an `Observation`
-   * **Reward Evaluation:** If a `ValueFunction` is defined, evaluate the outcome of the action execution, assigning a reward to the `Node`.
-
-4. **Backpropagation:** Propagate the obtained reward back up the tree, updating the value estimates and visit counts of ancestor nodes.
-
-When the search process finishes (based on predefined stopping criteria), the algorithm determines the best solution found using a `Discriminator`, which assesses the nodes based on their rewards and other factors.
-
-## Example: Basic Flow
+### Example: Basic Flow
 Basic setup similar to the moatless-tools agent.
 
 ```python
-from moatless.benchmark.swebench import load_instance, create_repository
-from moatless.completion.completion import CompletionModel
+from moatless.agent import CodingAgent
+from moatless.agent.code_prompts import SIMPLE_CODE_PROMPT
+from moatless.benchmark.swebench import create_repository
+from moatless.benchmark.utils import get_moatless_instance
+from moatless.completion import CompletionModel
+from moatless.file_context import FileContext
 from moatless.index import CodeIndex
 from moatless.search_tree import SearchTree
-from moatless.templates import create_basic_coding_tree
 from moatless.actions import FindClass, FindFunction, FindCodeSnippet, SemanticSearch, RequestMoreContext, RequestCodeChange, Finish, Reject
 
 index_store_dir = "/tmp/index_store"
+repo_base_dir = "/tmp/repos"
+persist_path = "trajectory.json"
+
+instance = get_moatless_instance("django__django-16379")
 
 completion_model = CompletionModel(model="gpt-4o", temperature=0.0)
 
@@ -148,22 +149,18 @@ code_index = CodeIndex.from_index_name(
 )
 
 actions = [
-    find_class = FindClass(code_index=code_index, repository=repository)
-    find_function = FindFunction(code_index=code_index, repository=repository)
-    find_code_snippet = FindCodeSnippet(code_index=code_index, repository=repository)
-    semantic_search = SemanticSearch(code_index=code_index, repository=repository)
-    request_context = RequestMoreContext(repository=repository)
-    request_code_change = RequestCodeChange(
-        repository=repository, completion_model=completion_model
-    )
-    finish = Finish()
-    reject = Reject()
+    FindClass(code_index=code_index, repository=repository),
+    FindFunction(code_index=code_index, repository=repository),
+    FindCodeSnippet(code_index=code_index, repository=repository),
+    SemanticSearch(code_index=code_index, repository=repository),
+    RequestMoreContext(repository=repository),
+    RequestCodeChange(repository=repository, completion_model=completion_model),
+    Finish(),
+    Reject()
 ]
 
 file_context = FileContext(repo=repository)
 agent = CodingAgent(actions=actions, completion=completion_model, system_prompt=SIMPLE_CODE_PROMPT)
-
-instance = load_instance("django__django-16379")
 
 search_tree = SearchTree.create(
     message=instance["problem_statement"],
@@ -179,48 +176,51 @@ print(node.observation.message)
 
 ### Example: MCTS Flow
 
-Evaluation flow with MCTS and testbeds.
-
+How to setup the evaluation flow with MCTS and testbeds.
 
 ```python
-from moatless.benchmark.swebench import load_instance, create_repository
-from moatless.completion.completion import CompletionModel
+from moatless.agent import CodingAgent
+from moatless.benchmark.swebench import create_repository
+from moatless.benchmark.utils import get_moatless_instance
+from moatless.completion import CompletionModel
+from moatless.discriminator import AgentDiscriminator
+from moatless.feedback import FeedbackGenerator
+from moatless.file_context import FileContext
 from moatless.index import CodeIndex
 from moatless.search_tree import SearchTree
-from moatless.templates import create_basic_coding_tree
-from moatless.actions import FindClass, FindFunction, FindCodeSnippet, SemanticSearch, RequestMoreContext, RequestCodeChange, Finish, Reject
+from moatless.selector import BestFirstSelector
+from moatless.actions import FindClass, FindFunction, FindCodeSnippet, SemanticSearch, RequestMoreContext, RequestCodeChange, Finish, Reject, RunTests
+from moatless.value_function import ValueFunction
 from testbeds.sdk import TestbedSDK
 from moatless.runtime.testbed import TestbedEnvironment
 
 index_store_dir = "/tmp/index_store"
+repo_base_dir = "/tmp/repos"
+persist_path = "trajectory.json"
 
-completion_model = CompletionModel(model="gpt-4o-mini", temperature=0.0)
+instance = get_moatless_instance("django__django-16379")
 
-repository = create_repository(instance)
+completion_model = CompletionModel(model="gpt-4o-mini", temperature=0.7)
+
+repository = create_repository(instance, repo_base_dir=repo_base_dir)
 
 code_index = CodeIndex.from_index_name(
     instance["instance_id"], index_store_dir=index_store_dir, file_repo=repository
 )
 
-
 file_context = FileContext(repo=repository)
-
 
 selector = BestFirstSelector()
 
 value_function = ValueFunction(completion=completion_model)
 
 discriminator = AgentDiscriminator(
-    create_completion=self._create_completion_model(),
-    debate_settings=DebateSettings(
-        n_agents=self.settings.debate_n_agents,
-        n_rounds=self.settings.debate_n_rounds,
-    )
+    completion=completion_model,
+    n_agents=5,
+    n_rounds=3,
 )
 
 feedback = FeedbackGenerator()
-
-instance = load_instance("django__django-16379")
 
 runtime = TestbedEnvironment(
     testbed_sdk=TestbedSDK(),
@@ -229,17 +229,15 @@ runtime = TestbedEnvironment(
 )
 
 actions = [
-    find_class = FindClass(code_index=code_index, repository=repository)
-    find_function = FindFunction(code_index=code_index, repository=repository)
-    find_code_snippet = FindCodeSnippet(code_index=code_index, repository=repository)
-    semantic_search = SemanticSearch(code_index=code_index, repository=repository)
-    request_context = RequestMoreContext(repository=repository)
-    request_code_change = RequestCodeChange(
-        repository=repository, completion_model=completion_model
-    )
-    run_tests = RunTests(code_index=code_index, repository=repository, runtime=runtime)
-    finish = Finish()
-    reject = Reject()
+    FindClass(code_index=code_index, repository=repository),
+    FindFunction(code_index=code_index, repository=repository),
+    FindCodeSnippet(code_index=code_index, repository=repository),
+    SemanticSearch(code_index=code_index, repository=repository),
+    RequestMoreContext(repository=repository),
+    RequestCodeChange(repository=repository, completion_model=completion_model),
+    RunTests(code_index=code_index, repository=repository, runtime=runtime),
+    Finish(),
+    Reject()
 ]
 
 agent = CodingAgent(actions=actions, completion=completion_model)
@@ -253,8 +251,9 @@ search_tree = SearchTree.create(
     discriminator=discriminator,
     feedback_generator=feedback,
     max_iterations=100,
-    max_expansions=5,
+    max_expansions=3,
     max_depth=25,
+    persist_path=persist_path,
 )
 
 node = search_tree.run_search()

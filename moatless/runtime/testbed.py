@@ -13,6 +13,7 @@ from moatless.repository.repository import Repository
 from moatless.runtime.runtime import TestResult, TestStatus
 from testbeds.schema import EvaluationResult, TraceItem
 from testbeds.sdk import TestbedSDK
+from testbeds.sdk.exceptions import TestbedError
 
 logger = logging.getLogger(__name__)
 
@@ -20,15 +21,15 @@ logger = logging.getLogger(__name__)
 class TestbedEnvironment(RuntimeEnvironment):
     def __init__(
         self,
-        testbed_sdk: TestbedSDK,
         repository: Repository,
-        instance: dict = None,
+        testbed_sdk: TestbedSDK | None = None,
+        instance: dict | None = None,
         log_dir: str | None = None,
-        **kwargs
+        **kwargs,
     ):
         super().__init__(**kwargs)
 
-        self.testbed_sdk = testbed_sdk
+        self.testbed_sdk = testbed_sdk or TestbedSDK()
         self.repository = repository
         self.instance = instance
         self.tests_to_ignore = []
@@ -52,7 +53,9 @@ class TestbedEnvironment(RuntimeEnvironment):
         log_content += f"\n\n# Patch:\n```diff\n{patch}\n```"
 
         try:
-            with self.testbed_sdk.create_client(instance_id=self.instance["instance_id"]) as testbed:
+            with self.testbed_sdk.create_client(
+                instance_id=self.instance["instance_id"]
+            ) as testbed:
                 response = testbed.run_tests(test_files=test_files, patch=patch)
 
                 if response.output:
@@ -93,6 +96,10 @@ class TestbedEnvironment(RuntimeEnvironment):
 
                 return mapped_results
 
+        except TestbedError as e:
+            logger.error(f"Error running tests. Cause: {e}")
+            log_content += f"\n\n## Error:\n{e}"
+
         except Exception as e:
             logger.exception(f"Error running tests {test_files}")
             log_content += f"\n\n## Error:\n{e}"
@@ -120,7 +127,9 @@ class TestbedEnvironment(RuntimeEnvironment):
         log_content += f"Test files: {test_patch_files}"
 
         try:
-            with self.testbed_sdk.create_client(instance_id=self.instance["instance_id"]) as testbed:
+            with self.testbed_sdk.create_client(
+                instance_id=self.instance["instance_id"]
+            ) as testbed:
                 if not patch.endswith("\n"):
                     patch += "\n"
 
@@ -129,10 +138,15 @@ class TestbedEnvironment(RuntimeEnvironment):
                 evaluation_result = testbed.run_evaluation(patch=patch)
 
                 if evaluation_result.output:
-                    log_content += f"\n\n## Log:\n```\n{evaluation_result.output}\n```\n"
+                    log_content += (
+                        f"\n\n## Log:\n```\n{evaluation_result.output}\n```\n"
+                    )
 
                 log_content += f"\n\n## Evaluation result:\n```json\n{evaluation_result.model_dump_json(indent=2)}\n```"
                 return evaluation_result
+        except TestbedError as e:
+            logger.error(f"Error running evaluation. Cause: {e}")
+            log_content += f"\n\n## Error:\n{e}"
         except Exception as e:
             logger.exception("Error running evaluation")
             log_content += f"\n\n## Error:\n{e}"
