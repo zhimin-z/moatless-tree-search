@@ -373,7 +373,7 @@ def update_visualization(container, search_tree: SearchTree, selected_tree_path:
                     size=node_sizes,
                     colorbar=dict(
                         thickness=15,
-                        title="Avg Reward",
+                        title="Reward",
                         xanchor="left",
                         titleside="right",
                         tickmode="array",
