@@ -12,7 +12,7 @@ Note: The original development code can be found at [github.com/a-antoniades/swe
 [![arXiv](https://img.shields.io/badge/arXiv-2408.08435-B31B1B.svg?style=flat&logo=arxiv)](https://arxiv.org/html/2410.20285v1)
 [![Streamlit](https://img.shields.io/badge/Demo-Streamlit-FF4B4B.svg?style=flat&logo=streamlit)](https://streamlit.moatless.ai/)
 [![YouTube](https://img.shields.io/badge/Video-YouTube-FF0000.svg?style=flat&logo=youtube)](https://www.youtube.com/watch?v=VcEHX_TNDgQ)
-[![Twitter](https://img.shields.io/badge/Tweet-X-1DA1F2.svg?style=flat&logo=twitter)](https://twitter.com/your-handle)
+[![Twitter](https://img.shields.io/badge/Tweet-X-1DA1F2.svg?style=flat&logo=twitter)](https://x.com/anton_iades/status/1852022811113697307)
 [![Discord](https://img.shields.io/badge/👾-Discord-7289DA?style=flat-square)](https://discord.gg/74VX8ppBEg)
 </div>
 
