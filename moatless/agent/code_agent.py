@@ -35,7 +35,8 @@ class CodingAgent(ActionAgent):
                 prompt += "\n\nHere are some examples of how to use the available actions:\n\n"
                 for example in few_shot_examples:
                     action_json = {
-                        "action": example.response.model_dump()
+                        "action": example.response.model_dump(),
+                        "action_type": example.response.__class__.__name__
                     }
                     prompt += f"User: {example.user_input}\nAssistant: ```json\n{json.dumps(action_json, indent=2)}\n```\n\n"
 

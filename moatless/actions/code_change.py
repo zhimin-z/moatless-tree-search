@@ -118,7 +118,7 @@ class RequestCodeChange(Action):
     args_schema: ClassVar[Type[ActionArguments]] = RequestCodeChangeArgs
 
     max_tokens_in_edit_prompt: int = Field(
-        default=500,
+        default=750,
         description="The maximum number of tokens allowed in the edit prompt.",
     )
     show_file_context: bool = Field(

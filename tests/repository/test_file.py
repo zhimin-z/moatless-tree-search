@@ -137,3 +137,10 @@ def test_matching_files(temp_repo):
     assert set(temp_repo.matching_files("src/*.py")) == {"src/main.py"}
 
     assert temp_repo.matching_files("nonexistent*.py") == []
+
+
+def test_matching_files_exact_filename(temp_repo):
+    assert set(temp_repo.matching_files("*/helpers.py")) == {"src/utils/helpers.py"}
+    assert set(temp_repo.matching_files("**/helpers.py")) == {"src/utils/helpers.py"}
+    # Should not match test_helpers.py
+    assert "tests/unit/test_helpers.py" not in temp_repo.matching_files("*/helpers.py")

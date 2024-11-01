@@ -4,7 +4,7 @@ from typing import List, Any, Dict
 from pydantic import Field, PrivateAttr
 
 from moatless.actions.action import Action
-from moatless.actions.model import ActionArguments, Observation, RewardScaleEntry
+from moatless.actions.model import ActionArguments, FewShotExample, Observation, RewardScaleEntry
 from moatless.file_context import FileContext
 from moatless.index.code_index import CodeIndex, is_test
 from moatless.repository.repository import Repository
@@ -271,3 +271,18 @@ class RunTests(Action):
                 code_index=code_index, repository=repository, runtime=runtime, **obj
             )
         return super().model_validate(obj)
+
+    @classmethod
+    def get_few_shot_examples(cls) -> List[FewShotExample]:
+        return [
+            FewShotExample.create(
+                user_input="Run the tests for our authentication module to verify the recent changes to the login flow",
+                response=RunTestsArgs(
+                    scratch_pad="We need to run the authentication tests to ensure the login flow changes haven't introduced any regressions.",
+                    test_files=[
+                        "tests/auth/test_authentication.py",
+                        "tests/auth/test_login.py"
+                    ]
+                )
+            )
+        ]

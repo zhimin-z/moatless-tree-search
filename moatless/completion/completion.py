@@ -9,6 +9,7 @@ from typing import Optional, Union, List, Tuple, Any
 import instructor
 import litellm
 import openai
+import tenacity
 from anthropic import Anthropic, AnthropicBedrock, NOT_GIVEN
 from anthropic.types import ToolUseBlock
 from instructor import OpenAISchema
@@ -82,6 +83,9 @@ class CompletionModel(BaseModel):
         system_prompt: str,
         actions: List[type[OpenAISchema]] | None = None,
     ) -> Tuple[OpenAISchema, Completion]:
+        if not system_prompt:
+            raise ValueError("System prompt is required")
+
         completion_messages = self._map_completion_messages(messages)
 
         if self.response_format != LLMResponseFormat.ANTHROPIC_TOOLS:
@@ -319,6 +323,7 @@ class CompletionModel(BaseModel):
 
             class TakeAction(OpenAISchema):
                 action: Union[tuple(actions)] = Field(...)
+                action_type: str = Field(..., description="The type of action being taken")
 
                 class Config:
                     smart_union = True
@@ -336,6 +341,11 @@ class CompletionModel(BaseModel):
                     max_tokens=self.max_tokens,
                     temperature=self.temperature,
                     stop=self.stop_words,
+                    max_retries=tenacity.Retrying(
+                        stop=tenacity.stop_after_attempt(3),
+                        before=lambda x: logger.info(x),
+                        after=lambda x: logger.info(x),
+                    ),  # type: ignore
                     messages=messages,
                     response_model=action_type,
                 )
@@ -615,7 +625,11 @@ class CompletionModel(BaseModel):
                             }
                         )
                     else:
-                        json_content = json.dumps(message.tool_call.input, indent=2)
+                        action_json = {
+                            "action": message.tool_call.input,
+                            "action_type": message.tool_call.name
+                        }
+                        json_content = json.dumps(action_json, indent=2)
 
                         # TODO Only if self.model.startswith("deepseek"): ?
                         json_content = f"```json\n{json_content}\n```"
@@ -673,6 +687,16 @@ class CompletionModel(BaseModel):
         if isinstance(obj, dict) and "response_format" in obj:
             obj["response_format"] = LLMResponseFormat(obj["response_format"])
         return super().model_validate(obj)
+
+    @model_validator(mode="after")
+    def set_api_key(self) -> "CompletionModel":
+        """
+        Update the model with the API key from en vars if model base URL is set but API key is not as we don't persist the API key.
+        """
+        if self.model_base_url and not self.model_api_key:
+            self.model_api_key = os.getenv("CUSTOM_LLM_API_KEY")
+
+        return self
 
 
 def generate_call_id():

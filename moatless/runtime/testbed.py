@@ -24,11 +24,8 @@ class TestbedEnvironment(RuntimeEnvironment):
         repository: Repository,
         testbed_sdk: TestbedSDK | None = None,
         instance: dict | None = None,
-        log_dir: str | None = None,
-        **kwargs,
+        log_dir: str | None = None
     ):
-        super().__init__(**kwargs)
-
         self.testbed_sdk = testbed_sdk or TestbedSDK()
         self.repository = repository
         self.instance = instance
@@ -42,9 +39,10 @@ class TestbedEnvironment(RuntimeEnvironment):
         )
 
     def run_tests(
-        self, file_context: FileContext, test_files: list[str]
+        self, file_context: FileContext, test_files: List[str] | None = None
     ) -> List[TestResult]:
         patch = file_context.generate_git_patch()
+
         if patch and not patch.endswith("\n"):
             patch += "\n"
 
@@ -215,6 +213,12 @@ class TestbedEnvironment(RuntimeEnvironment):
     def _map_test_results_to_issues(self, test_results: List) -> List[TestResult]:
         logger.debug(f"Map {len(test_results)} test results.")
 
+        file_cache = {}
+        def get_cached_file(file_path: str):
+            if file_path not in file_cache:
+                file_cache[file_path] = self.repository.get_file(file_path)
+            return file_cache[file_path]
+
         root_causes = set()
         ignored_tests = 0
 
@@ -223,6 +227,14 @@ class TestbedEnvironment(RuntimeEnvironment):
             trace_items = test_result.stacktrace
 
             test_status = TestStatus(test_result.status)
+
+            if test_status not in [TestStatus.ERROR, TestStatus.FAILED]:
+                mapped_results.append(TestResult(
+                    status=test_status,
+                    message=test_result.name,
+                    file_path=test_result.file_path,
+                ))
+                continue
 
             # reverse to start from root cause method on ERROR
             if test_status == TestStatus.ERROR:
@@ -308,16 +320,15 @@ class TestbedEnvironment(RuntimeEnvironment):
             else:
                 method = None
 
+            file = None
             if test_result.file_path:
-                file = self.repository.get_file(test_result.file_path)
+                file = get_cached_file(test_result.file_path)
                 if not file and trace_items:
                     for item in trace_items:
-                        file = self.repository.get_file(item.file_path)
+                        file = get_cached_file(item.file_path)
                         if file:
                             method = item.method
                             break
-            else:
-                file = None
 
             if file and file.module and method:
                 block = None

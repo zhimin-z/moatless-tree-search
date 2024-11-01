@@ -178,22 +178,35 @@ class FileRepository(Repository):
         Returns:
             List[str]: A list of relative file paths matching the pattern.
         """
-        # If the pattern doesn't start with '/' or '\', and doesn't contain '**/',
-        # prepend '**/' to allow matching in any subdirectory
-        if (
-            not file_pattern.startswith(("/", "\\", "**/"))
-            and "**/" not in file_pattern
-        ):
-            file_pattern = f"**/{file_pattern}"
+        # Split pattern into directory and filename parts
+        pattern_parts = file_pattern.split('/')
+        filename = pattern_parts[-1]
+        
+        # If filename doesn't contain wildcards, it should be an exact match
+        has_wildcards = any(c in filename for c in '*?[]')
+        if not has_wildcards:
+            # Prepend **/ only to the directory part if it exists
+            if len(pattern_parts) > 1:
+                dir_pattern = '/'.join(pattern_parts[:-1])
+                if not dir_pattern.startswith(("/", "\\", "**/")) and "**/" not in dir_pattern:
+                    file_pattern = f"**/{dir_pattern}/{filename}"
+                else:
+                    file_pattern = f"{dir_pattern}/{filename}"
+            else:
+                file_pattern = f"**/{filename}"
+        else:
+            # Original behavior for patterns with wildcards
+            if not file_pattern.startswith(("/", "\\", "**/")) and "**/" not in file_pattern:
+                file_pattern = f"**/{file_pattern}"
 
         repo_path = Path(self.repo_path)
         matched_files = []
-        repo_path = Path(self.repo_path)
         for path in repo_path.glob(file_pattern):
             if path.is_file():
-                relative_path = str(path.relative_to(self.repo_path)).replace(
-                    os.sep, "/"
-                )
+                # For exact filename matches, verify the filename matches exactly
+                if not has_wildcards and path.name != filename:
+                    continue
+                relative_path = str(path.relative_to(self.repo_path)).replace(os.sep, "/")
                 matched_files.append(relative_path)
 
         return matched_files
