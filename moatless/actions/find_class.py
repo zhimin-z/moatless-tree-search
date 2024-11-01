@@ -3,7 +3,7 @@ from typing import List, Type, ClassVar
 
 from pydantic import Field, model_validator
 
-from moatless.actions.model import ActionArguments
+from moatless.actions.model import ActionArguments, FewShotExample
 from moatless.actions.search_base import SearchBaseAction, SearchBaseArgs
 from moatless.index import CodeIndex
 from moatless.index.types import SearchCodeResponse
@@ -26,7 +26,6 @@ class FindClassArgs(SearchBaseArgs):
 
     class Config:
         title = "FindClass"
-
 
 class FindClass(SearchBaseAction):
     args_schema: ClassVar[Type[ActionArguments]] = FindClassArgs
@@ -67,3 +66,24 @@ class FindClass(SearchBaseAction):
             ]
         )
         return criteria
+
+    @classmethod
+    def get_few_shot_examples(cls) -> List[FewShotExample]:
+        return [
+            FewShotExample.create(
+                user_input="I need to see the implementation of the DatabaseManager class to understand how it handles transactions",
+                response=FindClassArgs(
+                    scratch_pad="To examine how the DatabaseManager class handles transactions, we need to locate its implementation in the codebase.",
+                    class_name="DatabaseManager"
+                )
+            ),
+            FewShotExample.create(
+                user_input="Show me the UserAuthentication class in the auth module",
+                response=FindClassArgs(
+                    scratch_pad="Looking for the UserAuthentication class specifically in the authentication module.",
+                    class_name="UserAuthentication",
+                    file_pattern="auth/*.py"
+                )
+            )
+        ]
+

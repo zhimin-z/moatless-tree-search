@@ -186,3 +186,45 @@ def test_dump_and_load_coding_agent():
     ):
         assert type(original_action) == type(loaded_action)
         assert original_action.name == loaded_action.name
+
+
+def test_create_system_prompt_with_few_shot_examples():
+    # Setup
+    repository = InMemRepository()
+    code_index = MockCodeIndex()
+    completion_model = Mock(CompletionModel)
+    completion_model.response_format = "json"
+    
+    actions = [
+        FindClass(repository=repository, code_index=code_index),
+        FindFunction(repository=repository, code_index=code_index),
+        RequestCodeChange(repository=repository, completion_model=completion_model)
+    ]
+    
+    agent = CodingAgent(actions=actions, completion=completion_model)
+    
+    # Get the system prompt
+    prompt = agent._create_system_prompt([FindClass, FindFunction, RequestCodeChange])
+    print(prompt)
+    
+    # Verify the prompt structure
+    assert "Here are some examples of how to use the available actions:" in prompt
+    
+    # Verify FindClass example
+    assert "auth/*.py" in prompt
+    assert "UserAuthentication" in prompt
+    
+    # Verify FindFunction example
+    assert "Find the calculate_interest function" in prompt
+    assert "validate_token method in the JWTAuthenticator class" in prompt
+    
+    # Verify RequestCodeChange example
+    assert "Add error handling to the process_payment method" in prompt
+    assert "Add import for the logging module" in prompt
+    
+    # Verify JSON format
+    assert "```json" in prompt
+    assert "scratch_pad" in prompt
+    assert "class_name" in prompt
+    assert "function_name" in prompt
+    assert "file_path" in prompt

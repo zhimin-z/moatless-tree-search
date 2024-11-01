@@ -6,7 +6,7 @@ from typing import List, Type, Tuple, Any, Dict, Optional, ClassVar
 
 from pydantic import BaseModel, ConfigDict
 
-from moatless.actions.model import ActionArguments, Observation, RewardScaleEntry
+from moatless.actions.model import ActionArguments, Observation, RewardScaleEntry, FewShotExample
 from moatless.file_context import FileContext
 from moatless.index import CodeIndex
 from moatless.repository.repository import Repository
@@ -223,3 +223,11 @@ At this stage, the agent is still working on the solution. Your task is twofold:
             for name, obj in module.__dict__.items():
                 if isinstance(obj, type) and issubclass(obj, Action) and obj != Action:
                     _actions[name] = obj
+
+    @classmethod
+    def get_few_shot_examples(cls) -> List[FewShotExample]:
+        """
+        Returns a list of few-shot examples specific to this action.
+        Override this method in subclasses to provide custom examples.
+        """
+        return []

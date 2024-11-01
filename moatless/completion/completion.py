@@ -124,6 +124,27 @@ class CompletionModel(BaseModel):
 
         return action_args, completion
 
+    def create_text_completion(self, messages: List[Message], system_prompt: str):
+        completion_messages = self._map_completion_messages(messages)
+
+        if self.response_format == LLMResponseFormat.ANTHROPIC_TOOLS:
+            response, completion_response = self._anthropic_completion(
+                completion_messages, system_prompt
+            )
+        else:
+            completion_messages.insert(0, {"role": "system", "content": system_prompt})
+            response, completion_response = self._litellm_text_completion(
+                completion_messages
+            )
+
+        completion = Completion.from_llm_completion(
+            input_messages=completion_messages,
+            completion_response=completion_response,
+            model=self.model,
+        )
+
+        return response, completion
+
     def _litellm_tool_completion(
         self,
         messages: list[dict],
@@ -218,27 +239,6 @@ class CompletionModel(BaseModel):
             tool_args=tool_args, tool_name=tool_name
         )
         return action_request, completion_response
-
-    def create_text_completion(self, messages: List[Message], system_prompt: str):
-        completion_messages = self._map_completion_messages(messages)
-
-        if self.response_format == LLMResponseFormat.ANTHROPIC_TOOLS:
-            response, completion_response = self._anthropic_completion(
-                completion_messages, system_prompt
-            )
-        else:
-            completion_messages.insert(0, {"role": "system", "content": system_prompt})
-            response, completion_response = self._litellm_text_completion(
-                completion_messages
-            )
-
-        completion = Completion.from_llm_completion(
-            input_messages=completion_messages,
-            completion_response=completion_response,
-            model=self.model,
-        )
-
-        return response, completion
 
     def input_messages(
         self, content: str, completion: Completion | None, feedback: str | None = None
