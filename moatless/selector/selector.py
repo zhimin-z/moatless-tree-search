@@ -338,7 +338,7 @@ class Selector(BaseModel):
 
     def calculate_diversity_bonus(self, node: Node) -> float:
         """
-        Calculate the diversity bonus based on the similarity of the node's solution to other expandable nodes.
+        Calculate the diversity bonus based on the similarity of the node's solution to already expanded nodes.
 
         Purpose: Boosts the score for nodes whose solutions have low similarity to other explored nodes,
         encouraging the exploration of novel solutions.
@@ -346,7 +346,7 @@ class Selector(BaseModel):
         if not self.diversity_weight:
             return 0
 
-        expandable_nodes = [n for n in node.get_root().get_expandable_descendants() if n.node_id != node.node_id]
+        expandable_nodes = [n for n in node.get_root().get_expanded_descendants() if n.node_id != node.node_id]
 
         if not expandable_nodes:
             # No other nodes to compare; return maximum bonus

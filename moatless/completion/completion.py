@@ -17,8 +17,9 @@ from instructor.exceptions import InstructorRetryException
 from litellm.types.utils import ModelResponse
 from openai import AzureOpenAI, OpenAI, LengthFinishReasonError
 from pydantic import BaseModel, Field, model_validator
-
+from litellm.exceptions import BadRequestError, NotFoundError, AuthenticationError, APIError
 from moatless.completion.model import Message, Completion
+from moatless.exceptions import CompletionRejectError, CompletionRuntimeError
 
 logger = logging.getLogger(__name__)
 
@@ -108,17 +109,25 @@ class CompletionModel(BaseModel):
                 action_args, completion_response = self._instructor_completion(
                     completion_messages, actions
                 )
+
         except InstructorRetryException as e:
             logger.warning(
-                f"Failed to get completion response from LLM. {e}\n\nCompletion: {e.last_completion}"
+                f"Instructor failed after {e.n_attempts} attempts. Last completion: {e.last_completion}. Messages: {e.messages}")
+            raise CompletionRejectError(
+                f"Instructor failed after {e.n_attempts} attempts",
+                last_completion=e.last_completion,
+                messages=e.messages
             )
-            raise e
         except Exception as e:
-            logger.warning(
-                f"Failed to get completion response from LLM. {e}."
-                f"Input messages:\n {json.dumps(completion_messages, indent=2)}"
-            )
-            raise e
+            if isinstance(e, APIError):
+                logger.error(
+                    f"Request failed. self.model: {self.model}, base_url: {self.model_base_url}. Model: {e.model}, Provider {e.llm_provider}. Litellm {e.litellm_debug_info}. Exception {e.message}"
+                )
+            else:
+                logger.error(f"Failed to get completion response from litellm: {e}")
+            raise CompletionRuntimeError(
+                f"Failed to get completion response: {e}",
+            ) from e
 
         completion = Completion.from_llm_completion(
             input_messages=completion_messages,
@@ -149,6 +158,50 @@ class CompletionModel(BaseModel):
 
         return response, completion
 
+    def create_completion_with_response_model(
+        self,
+        messages: list[Message],
+        system_prompt: str,
+        response_model: type[OpenAISchema]
+    ) -> Tuple[OpenAISchema, ModelResponse]:
+        if not self.response_format == LLMResponseFormat.JSON:
+            return self.create_completion(messages, system_prompt, actions=[response_model])
+
+        completion_messages = self._map_completion_messages(messages)
+        completion_messages.insert(0, {"role": "system", "content": system_prompt})
+
+        client = instructor.from_litellm(
+            litellm.completion, mode=instructor.Mode.JSON
+        )
+
+        retries = tenacity.Retrying(
+            retry=tenacity.retry_if_not_exception_type((APIError, BadRequestError, NotFoundError, AuthenticationError)),
+            stop=tenacity.stop_after_attempt(3),
+            #before=lambda x: logger.info(x),
+            #after=lambda x: logger.info(x),
+        )
+        response, completion_response = (
+            client.chat.completions.create_with_completion(
+                model=self.model,
+                api_base=self.model_base_url,
+                api_key=self.model_api_key,
+                max_tokens=self.max_tokens,
+                temperature=self.temperature,
+                stop=self.stop_words,
+                messages=completion_messages,
+                response_model=response_model,
+                max_retries=retries,  # type: ignore
+            )
+        )
+
+        completion = Completion.from_llm_completion(
+            input_messages=completion_messages,
+            completion_response=completion_response,
+            model=self.model,
+        )
+
+        return response, completion
+
     def _litellm_tool_completion(
         self,
         messages: list[dict],
@@ -165,7 +218,7 @@ class CompletionModel(BaseModel):
             model=self.model,
             max_tokens=self.max_tokens,
             temperature=self.temperature,
-            base_url=self.model_base_url,
+            api_base=self.model_base_url,
             api_key=self.model_api_key,
             stop=self.stop_words,
             tools=tools,
@@ -295,7 +348,7 @@ class CompletionModel(BaseModel):
 
         completion_response = litellm.completion(
             model=self.model,
-            base_url=self.model_base_url,
+            api_base=self.model_base_url,
             api_key=self.model_api_key,
             max_tokens=self.max_tokens,
             temperature=self.temperature,
@@ -312,7 +365,7 @@ class CompletionModel(BaseModel):
     ) -> Tuple[OpenAISchema, ModelResponse]:
         if self.response_format == LLMResponseFormat.JSON:
             client = instructor.from_litellm(
-                litellm.completion, mode=instructor.Mode.MD_JSON
+                litellm.completion, mode=instructor.Mode.JSON
             )
         else:
             client = instructor.from_litellm(
@@ -332,39 +385,38 @@ class CompletionModel(BaseModel):
         else:
             action_type = None
 
-        try:
-            take_action, completion_response = (
-                client.chat.completions.create_with_completion(
-                    model=self.model,
-                    base_url=self.model_base_url,
-                    api_key=self.model_api_key,
-                    max_tokens=self.max_tokens,
-                    temperature=self.temperature,
-                    stop=self.stop_words,
-                    max_retries=tenacity.Retrying(
-                        stop=tenacity.stop_after_attempt(3),
-                        before=lambda x: logger.info(x),
-                        after=lambda x: logger.info(x),
-                    ),  # type: ignore
-                    messages=messages,
-                    response_model=action_type,
-                )
+        retries = tenacity.Retrying(
+            retry=tenacity.retry_if_not_exception_type((APIError, BadRequestError, NotFoundError, AuthenticationError)),
+            stop=tenacity.stop_after_attempt(3),
+            before=lambda x: logger.info(x),
+            after=lambda x: logger.info(x),
+        )
+        take_action, completion_response = (
+            client.chat.completions.create_with_completion(
+                model=self.model,
+                api_base=self.model_base_url,
+                api_key=self.model_api_key,
+                max_tokens=self.max_tokens,
+                temperature=self.temperature,
+                stop=self.stop_words,
+                messages=messages,
+                response_model=action_type,
+                max_retries=retries,  # type: ignore
             )
+        )
 
-            if take_action.action:
-                return take_action.action, completion_response
-            else:
-                logger.warning(
-                    f"No action returned in response: {take_action}. Completion response: {completion_response}"
-                )
-                raise ValueError(f"No action returned in response: {take_action}.")
+        if take_action.action:
+            return take_action.action, completion_response
+        else:
+            logger.warning(
+                f"No action returned in response: {take_action}. Completion response: {completion_response}"
+            )
+            raise CompletionRejectError(
+                f"No action returned in response: {take_action}.",
+                last_completion=completion_response
+            )
+        
 
-        except InstructorRetryException as e:
-            logger.error(json.dumps(e.messages, indent=2))
-            raise e
-        except Exception as e:
-            logger.exception(f"Failed to get completion response from litellm: {e}")
-            raise e
 
     def function_call_system_prompt(self):
         return """You are an AI language model tasked with transforming unstructured messages wrapped in the XML tag <message> into structured tool calls. Your guidelines are:

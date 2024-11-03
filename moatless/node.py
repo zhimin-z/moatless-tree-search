@@ -9,21 +9,9 @@ from moatless.actions.model import ActionArguments, Observation
 from moatless.completion.model import Usage, Completion
 from moatless.file_context import FileContext
 from moatless.repository.repository import Repository
+from moatless.value_function.model import Reward
 
 logger = logging.getLogger(__name__)
-
-
-class Reward(OpenAISchema):
-    explanation: Optional[str] = Field(
-        None, description="An explanation and the reasoning behind your decision."
-    )
-    feedback: Optional[str] = Field(
-        None, description="Feedback to the alternative branch."
-    )
-    value: int = Field(
-        ...,
-        description="As ingle integer value between -100 and 100 based on your confidence in the correctness of the action and its likelihood of resolving the issue",
-    )
 
 
 class Node(BaseModel):
@@ -135,6 +123,15 @@ class Node(BaseModel):
         for child in self.children:
             expandable_nodes.extend(child.get_expandable_descendants())
         return expandable_nodes
+
+    def get_expanded_descendants(self) -> List["Node"]:
+        """Get all expanded descendants of this node, including self if expanded."""
+        expanded_nodes = []
+        if self.expanded_count() > 0:
+            expanded_nodes.append(self)
+        for child in self.children:
+            expanded_nodes.extend(child.get_expanded_descendants())
+        return expanded_nodes
 
     def get_all_nodes(self) -> List["Node"]:
         nodes = []

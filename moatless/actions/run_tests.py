@@ -150,9 +150,9 @@ class RunTests(Action):
                     test_context_file = file_context.get_file(test_file)
                     test_context_file.add_spans(failed_span_ids)
 
-        return self.create_output(test_results)
+        return self.create_output(test_results, test_files)
 
-    def create_output(self, test_results: List[TestResult]) -> Observation:
+    def create_output(self, test_results: List[TestResult], test_files: List[str]) -> Observation:
         if not test_results:
             return Observation(
                 message="No tests were run",
@@ -191,7 +191,11 @@ class RunTests(Action):
                 f"* {test_result.status.value} {attributes}>\n```\n{test_result.message}\n```\n"
             )
 
-        response_msg = f"Ran {len(test_results)} tests. {passed_count} passed. {failure_count} failed. {error_count} errors."
+        response_msg = f"Ran {len(test_results)} tests in the following files:"
+        for test_file in test_files:
+            response_msg += f"\n * {test_file}"
+
+        response_msg += f"\n\n{passed_count} passed. {failure_count} failed. {error_count} errors."
 
         extra = ""
         if test_result_strings:
@@ -277,7 +281,7 @@ class RunTests(Action):
         return [
             FewShotExample.create(
                 user_input="Run the tests for our authentication module to verify the recent changes to the login flow",
-                response=RunTestsArgs(
+                action=RunTestsArgs(
                     scratch_pad="We need to run the authentication tests to ensure the login flow changes haven't introduced any regressions.",
                     test_files=[
                         "tests/auth/test_authentication.py",

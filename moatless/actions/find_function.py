@@ -106,7 +106,7 @@ class FindFunction(SearchBaseAction):
         return [
             FewShotExample.create(
                 user_input="Find the calculate_interest function in our financial module to review its logic",
-                response=FindFunctionArgs(
+                action=FindFunctionArgs(
                     scratch_pad="To review the logic of the calculate_interest function, we need to locate its implementation in the financial module.",
                     function_name="calculate_interest",
                     file_pattern="financial/**/*.py"
@@ -114,7 +114,7 @@ class FindFunction(SearchBaseAction):
             ),
             FewShotExample.create(
                 user_input="Show me the validate_token method in the JWTAuthenticator class",
-                response=FindFunctionArgs(
+                action=FindFunctionArgs(
                     scratch_pad="Looking for the validate_token method specifically within the JWTAuthenticator class to examine the token validation logic.",
                     function_name="validate_token",
                     class_name="JWTAuthenticator"

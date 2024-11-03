@@ -1,5 +1,6 @@
 from typing import Optional
 
+from moatless.actions.apply_change_and_test import ApplyCodeChangeAndTest
 from moatless.actions.code_change import RequestCodeChange
 from moatless.actions.find_class import FindClass
 from moatless.actions.find_code_snippet import FindCodeSnippet
@@ -78,9 +79,6 @@ def create_coding_actions(
     find_code_snippet = FindCodeSnippet(code_index=code_index, repository=repository)
     semantic_search = SemanticSearch(code_index=code_index, repository=repository)
     request_context = RequestMoreContext(repository=repository)
-    request_code_change = RequestCodeChange(
-        repository=repository, completion_model=edit_completion_model
-    )
 
     actions = [
         semantic_search,
@@ -88,14 +86,21 @@ def create_coding_actions(
         find_function,
         find_code_snippet,
         request_context,
-        request_code_change,
     ]
 
     if runtime:
-        actions.append(
-            RunTests(code_index=code_index, repository=repository, runtime=runtime)
+        request_code_change = ApplyCodeChangeAndTest(
+            code_index=code_index, repository=repository, runtime=runtime, completion_model=edit_completion_model
+        )
+        #actions.append(
+        #    RunTests(code_index=code_index, repository=repository, runtime=runtime)
+        #)
+    else:
+        request_code_change = RequestCodeChange(
+            repository=repository, completion_model=edit_completion_model
         )
 
+    actions.append(request_code_change)
     actions.append(Finish())
     actions.append(Reject())
 

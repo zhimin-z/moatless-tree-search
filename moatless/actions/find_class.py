@@ -72,14 +72,14 @@ class FindClass(SearchBaseAction):
         return [
             FewShotExample.create(
                 user_input="I need to see the implementation of the DatabaseManager class to understand how it handles transactions",
-                response=FindClassArgs(
+                action=FindClassArgs(
                     scratch_pad="To examine how the DatabaseManager class handles transactions, we need to locate its implementation in the codebase.",
                     class_name="DatabaseManager"
                 )
             ),
             FewShotExample.create(
                 user_input="Show me the UserAuthentication class in the auth module",
-                response=FindClassArgs(
+                action=FindClassArgs(
                     scratch_pad="Looking for the UserAuthentication class specifically in the authentication module.",
                     class_name="UserAuthentication",
                     file_pattern="auth/*.py"

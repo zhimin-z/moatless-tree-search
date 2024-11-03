@@ -96,6 +96,7 @@ def build_graph(
 
         if node.action and node.action.name == "Finish":
             resolved = is_resolved(node.node_id)
+            logger.info(f"Node {node.node_id} resolved: {resolved}")
         else:
             resolved = None
 
@@ -160,6 +161,7 @@ def show_completion(completion):
 def update_visualization(container, search_tree: SearchTree, selected_tree_path: str):
     # eval_result file
     eval_result = None
+    logger.info(f"Selected tree path: {selected_tree_path}")
     directory_path = os.path.dirname(selected_tree_path)
     eval_path = f"{directory_path}/eval_result.json"
     if os.path.exists(eval_path):
@@ -240,6 +242,9 @@ def update_visualization(container, search_tree: SearchTree, selected_tree_path:
             node_line_widths = []
             node_line_colors = []
 
+            # Create lists for node symbols
+            node_symbols = []
+
             for node in G_subset.nodes():
                 node_info = G.nodes[node]
                 x, y = pos[node]
@@ -247,7 +252,31 @@ def update_visualization(container, search_tree: SearchTree, selected_tree_path:
                 node_y.append(y)
                 reward = None
 
-                if node_info.get("name") == "Rejected":
+                # Set node shape/symbol
+                if node_info.get("name") == "Finish":
+                    node_symbols.append("square")
+                    node_sizes.append(60)
+                    node_line_widths.append(4)
+                    # Set border color based on resolution status
+                    if node_info.get("resolved") is True:
+                        node_line_colors.append("#FFD700")  # Gold for resolved
+                    elif node_info.get("resolved") is False:
+                        node_line_colors.append("red")
+                    else:
+                        node_line_colors.append("#FFD700")  # Default gold color
+                elif node_info.get("name") == "Reject":
+                    node_symbols.append("square")
+                    node_sizes.append(60)
+                    node_line_widths.append(4)
+                    node_line_colors.append("red")
+                else:
+                    node_symbols.append("circle")
+                    node_sizes.append(60)
+                    node_line_widths.append(2)
+                    node_line_colors.append("rgba(0,0,0,0.5)")
+
+                # Set node color based on reward/status
+                if node_info.get("name") == "Reject":
                     node_colors.append("red")
                 elif node_info.get("type") == "action":
                     node_colors.append("#6c7aaa")  # Grayish blue
@@ -258,16 +287,6 @@ def update_visualization(container, search_tree: SearchTree, selected_tree_path:
                     if reward is None:
                         reward = node_info.get("avg_reward", 0)
                     node_colors.append(reward)
-
-                node_sizes.append(60)
-
-                # Set border width and color based on whether the node is in selected_transition_ids
-                if node in selected_transition_ids:
-                    node_line_widths.append(4)
-                    node_line_colors.append("purple")
-                else:
-                    node_line_widths.append(2)
-                    node_line_colors.append("rgba(0,0,0,0.5)")
 
                 if node_info.get("type") == "node":
                     badge = decide_badge(node_info)
@@ -370,6 +389,7 @@ def update_visualization(container, search_tree: SearchTree, selected_tree_path:
                 mode="markers+text",
                 hoverinfo="text",
                 marker=dict(
+                    symbol=node_symbols,
                     showscale=True,
                     colorscale=[
                         [0, "red"],  # -100 to 0
@@ -515,9 +535,6 @@ def update_visualization(container, search_tree: SearchTree, selected_tree_path:
                     point_index = selected_points[0]["point_index"]
                     if point_index in point_to_node_id:
                         node_id = point_to_node_id[point_index]
-                        logger.info(
-                            f"Selected node: {node_id} by point index: {point_index}: {point_to_node_id}"
-                        )
                         st.session_state.selected_node_id = int(
                             node_id.split("Node")[1]
                         )

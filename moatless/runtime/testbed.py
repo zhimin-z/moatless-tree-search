@@ -24,19 +24,36 @@ class TestbedEnvironment(RuntimeEnvironment):
         repository: Repository,
         testbed_sdk: TestbedSDK | None = None,
         instance: dict | None = None,
-        log_dir: str | None = None
+        dataset_name="princeton-nlp/SWE-bench_Lite",
+        log_dir: str | None = None,
+        enable_cache: bool = False
     ):
-        self.testbed_sdk = testbed_sdk or TestbedSDK()
+        self.testbed_sdk = testbed_sdk or TestbedSDK(enable_cache=enable_cache)
         self.repository = repository
         self.instance = instance
+        self.dataset_name = dataset_name
         self.tests_to_ignore = []
         self.log_dir = log_dir
+        self._test_cache = {} if enable_cache else None
 
     @classmethod
     def from_instance(cls, instance: dict, repository: GitRepository, **kwargs):
         return cls(
             testbed_sdk=TestbedSDK(), repository=repository, instance=instance, **kwargs
         )
+
+    def _generate_cache_key(self, test_files: List[str] | None, patch: str | None) -> str:
+        """Generate a unique cache key based on test files and patch content"""
+        key_parts = []
+        if test_files:
+            key_parts.extend(sorted(test_files))
+        if patch:
+            key_parts.append(patch)
+        if not key_parts:
+            key_parts.append("all_tests_no_patch")
+            
+        combined = "|".join(key_parts)
+        return hashlib.sha256(combined.encode()).hexdigest()
 
     def run_tests(
         self, file_context: FileContext, test_files: List[str] | None = None
@@ -46,13 +63,21 @@ class TestbedEnvironment(RuntimeEnvironment):
         if patch and not patch.endswith("\n"):
             patch += "\n"
 
+        # Check cache if enabled
+        if self._test_cache is not None:
+            cache_key = self._generate_cache_key(test_files, patch)
+            cached_results = self._test_cache.get(cache_key)
+            if cached_results:
+                logger.info("Returning cached test results")
+                return cached_results
+
         log_content = "# Test Run\n\n"
         log_content += f"Files: {test_files}"
         log_content += f"\n\n# Patch:\n```diff\n{patch}\n```"
 
         try:
             with self.testbed_sdk.create_client(
-                instance_id=self.instance["instance_id"]
+                instance_id=self.instance["instance_id"], dataset_name=self.dataset_name
             ) as testbed:
                 response = testbed.run_tests(test_files=test_files, patch=patch)
 
@@ -86,11 +111,10 @@ class TestbedEnvironment(RuntimeEnvironment):
 
                 mapped_results = self._map_test_results_to_issues(test_results)
 
-                if mapped_results:
-                    dicts = [result.model_dump() for result in mapped_results]
-                    for dict in dicts:
-                        dict["status"] = dict["status"].value
-                    log_content += f"\n\n## Mapped test results:\n```json\n{json.dumps(dicts, indent=2)}\n```"
+                # Cache results if caching is enabled
+                if self._test_cache is not None:
+                    cache_key = self._generate_cache_key(test_files, patch)
+                    self._test_cache[cache_key] = mapped_results
 
                 return mapped_results
 
@@ -105,7 +129,7 @@ class TestbedEnvironment(RuntimeEnvironment):
 
             traceback = traceback.format_exc()
             log_content += f"\n\n# Traceback:\n{traceback}"
-            return []
+            raise e
         finally:
             if self.log_dir:
                 datetime_str = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
@@ -126,7 +150,7 @@ class TestbedEnvironment(RuntimeEnvironment):
 
         try:
             with self.testbed_sdk.create_client(
-                instance_id=self.instance["instance_id"]
+                instance_id=self.instance["instance_id"], dataset_name=self.dataset_name
             ) as testbed:
                 if not patch.endswith("\n"):
                     patch += "\n"
@@ -402,3 +426,12 @@ class TestbedEnvironment(RuntimeEnvironment):
             logger.info(f"Ignored {ignored_tests} tests with redundant root cause")
 
         return mapped_results
+
+    def clear_cache(self):
+        """Clear the test results cache"""
+        if self._test_cache is not None:
+            self._test_cache.clear()
+
+    def __del__(self):
+        """Cleanup when environment is deleted"""
+        self.clear_cache()

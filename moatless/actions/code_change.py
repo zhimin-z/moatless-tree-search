@@ -2,7 +2,7 @@ import logging
 from enum import Enum
 from typing import Optional, List, Union, Tuple, Any, Type, ClassVar
 
-from pydantic import Field, PrivateAttr
+from pydantic import Field, PrivateAttr, model_validator
 
 from moatless.actions.action import Action
 from moatless.actions.model import ActionArguments, FewShotExample, Observation, RewardScaleEntry
@@ -79,27 +79,37 @@ class ChangeType(str, Enum):
 
 class RequestCodeChangeArgs(ActionArguments):
     """
-    Request a code change.
+    Apply a code change through an AI agent. This action instructs an AI assistant to 
+    modify code based on provided instructions and pseudo-code. The AI will analyze the existing code within 
+    the specified line range and apply changes while maintaining proper syntax, indentation, and context.
     """
 
     file_path: str = Field(..., description="The file path of the code to be updated.")
     instructions: str = Field(
-        ..., description="Instructions about the next step to do the code change."
+        ..., description="Natural language instructions for the AI assistant describing the required code changes."
     )
-    pseudo_code: str = Field(..., description="Pseudo code illustrating the change.")
+    pseudo_code: str = Field(..., description="Example code snippet illustrating the desired changes. The AI will use this as a reference for implementing the modifications.")
     change_type: ChangeType = Field(
-        ..., description="Type of change: 'addition', 'modification', or 'deletion'."
+        ..., description="Type of change to perform: 'addition' (insert new code), 'modification' (update existing code), or 'deletion' (remove code)."
     )
     start_line: int = Field(
-        ..., description="The start line of the existing code to be updated."
+        ..., description="The line number where the code change should begin. For additions, specifies the insertion point."
     )
     end_line: int = Field(
-        ...,
-        description="The end line of the code to be updated when modifying existing code.",
+        ..., description="The line number where the code change should end. For additions, specifies the insertion point."
     )
 
     class Config:
         title = "RequestCodeChange"
+
+    @model_validator(mode='before')
+    @classmethod
+    def set_missing_end_line(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            if not data.get("end_line"):
+                data["end_line"] = data["start_line"]
+
+        return data
 
     def equals(self, other: "RequestCodeChangeArgs") -> bool:
         if not isinstance(other, RequestCodeChangeArgs):
@@ -166,36 +176,37 @@ class RequestCodeChange(Action):
                 expect_correction=True,
             )
 
-        context_file = file_context.get_file(args.file_path)
-        if (
-            not file_context.has_file(args.file_path)
-            and context_file
-            and context_file.module
-        ):
+        if not self._repository.file_exists(args.file_path):
             return Observation(
-                message=f"File {args.file_path} is not in context. At least one span must be added. Use RequestMoreContext to one ore more of the available spans: {self.span_id_list(context_file.module.span_ids)}",
+                message=f"File {args.file_path} not found.",
+                properties={"fail_reason": "file_not_found"},
+                expect_correction=True,
+            )
+
+        if self._repository.is_directory(args.file_path):
+            return Observation(
+                message=f"{args.file_path} is a directory. Please provide a file path.",
+                properties={"fail_reason": "is_directory"},
+                expect_correction=True,
+            )
+
+        if not file_context.has_file(args.file_path) and args.change_type != ChangeType.addition:
+            context_file = file_context.get_file(args.file_path)
+            message = f"File {args.file_path} is not in context."
+            if context_file.module:
+                message += f"At least one span must be added. Use RequestMoreContext to one ore more of the available spans: {self.span_id_list(context_file.module.span_ids)}"
+
+            return Observation(
+                message=message,
                 properties={"fail_reason": "file_not_in_context"},
                 expect_correction=True,
             )
 
+        context_file = file_context.get_file(args.file_path)
         if not context_file:
-            if self._repository.is_directory(args.file_path):
-                return Observation(
-                    message=f"{args.file_path} is a directory. Please provide a file path.",
-                    properties={"fail_reason": "is_directory"},
-                    expect_correction=True,
-                )
-
             logger.info(
                 f"File {args.file_path} is not found in the file repository. Will create it and add to context."
             )
-
-            if args.change_type != ChangeType.addition:
-                return Observation(
-                    message=f"File {args.file_path} is not found in the file repository and can't be modified.",
-                    properties={"fail_reason": "file_not_found"},
-                    expect_correction=True,
-                )
 
             context_file = file_context.add_file(args.file_path)
             updated_content = args.pseudo_code
@@ -440,6 +451,13 @@ class RequestCodeChange(Action):
             logger.info(f"End line not set, set to start line {start_line}")
             end_line = start_line
 
+        # Verify that the code that is supposed to be changed is in the context
+        if context_file.module and change_type != ChangeType.addition:
+            code_block = self.find_smallest_covering_block(context_file.module, start_line, end_line)
+            if code_block and code_block.belongs_to_span and code_block.belongs_to_span.span_id not in context_file.span_ids:
+                return f"The code span {code_block.belongs_to_span.span_id} between lines {start_line} - {end_line} is not in the context. Please use the RequestMoreContext to add the correct line numbers or span ids to context."
+            # TODO: Handle if no code block is found
+
         code_lines = context_file.content.split("\n")
         lines_to_edit = code_lines[start_line - 1 : end_line]
         code_to_edit = "\n".join(lines_to_edit)
@@ -486,8 +504,8 @@ class RequestCodeChange(Action):
         else:
             logger.debug(f"Updated file {file_path} with diff:\n{diff}.")
         return Observation(
-            message=f"Applied the change to {file_path}",
-            extra=f"\n\n```diff\n{diff}\n```",
+            message=f"Applied the change to {file_path}\n\n```diff\n{diff}\n```",
+            properties={"diff": diff},
         )
 
     def _update_content_by_line_numbers(
@@ -815,17 +833,14 @@ class RequestCodeChange(Action):
     @classmethod
     def get_evaluation_criteria(cls, trajectory_length) -> List[str]:
         criteria = super().get_evaluation_criteria(trajectory_length)
-        criteria.extend(
-            [
-                "Code Modification Accuracy: Correct identification of code spans, accuracy of changes, and absence of unintended modifications.",
-                "Code Quality: Check for syntax errors, logical flaws, or unintended side effects.",
-                "Instruction Clarity: Ensure that instructions and pseudocode are clear and actionable.",
-                "Python-Specific Features Utilization: Assess whether the agent has appropriately utilized Python-specific features that enhance the solution.",
-                "Common Git Diff Issues: Check for issues such as incorrect line numbers, unintended additions or deletions, formatting errors, or changes to unrelated parts of the code.",
-                "Penalize Unintended Changes: Unintended changes should be identified and heavily penalized.",
-                "Addressing Test Failures: Verify if the agent is properly addressing test failures from previous `RunTests` actions.",
-            ]
-        )
+        criteria.extend([
+            "Instruction Clarity: Ensure that instructions and pseudocode are clear and actionable.",
+            "Instruction Compliance: The git diff must *exactly* implement the provided pseudo_code. Identify any discrepancies, omissions, or additions. If discrepancies exist, you should lower the reward accordingly.",
+            "Code Modification Accuracy and Quality: Check for correct identification of code spans, accuracy of changes, syntax errors, logical flaws, unintended modifications, and unintended side effects.",
+            "Python-Specific Features Utilization: Assess whether the agent has appropriately utilized Python-specific features that enhance the solution.",
+            "Common Git Diff Issues and Unintended Changes: Check for issues such as incorrect line numbers, unintended additions or deletions, formatting errors, changes to unrelated parts of the code, and heavily penalize unintended changes.",
+            "Addressing Test Failures: Verify if the agent is properly addressing test failures from previous `RunTests` actions.",
+        ])
         return criteria
 
     @classmethod
@@ -835,37 +850,37 @@ class RequestCodeChange(Action):
                 (
                     90,
                     100,
-                    "The code change is optimal, with a perfect Git diff matching the instructions, and requires no further changes.",
+                    "The code change is optimal, with a perfect Git diff exactly matching the pseudo code, and requires no further changes.",
                 ),
                 (
                     75,
                     89,
-                    "The code change significantly advances the solution, Git diff is accurate with minor issues.",
+                    "The code change significantly advances the solution, with an accurate Git diff exactly matching the pseudo code,.",
                 ),
                 (
                     50,
                     74,
-                    "The code change is mostly correct but may have minor issues or opportunities for optimization, Git diff has minor inaccuracies.",
+                    "The code change is mostly correct but has minor issues or opportunities for optimization; the Git diff exactly matching the pseudo code,.",
                 ),
                 (
                     25,
                     49,
-                    "The code change is acceptable but may have some issues or be less effective than possible alternatives, Git diff has noticeable inaccuracies.",
+                    "The code change is acceptable but has noticeable issues or is less effective than possible alternatives;",
                 ),
                 (
                     0,
                     24,
-                    "The code change has minimal impact or minor negative consequences, Git diff contains significant inaccuracies.",
+                    "The code change has minimal impact or introduces minor negative consequences",
                 ),
                 (
                     -49,
                     -1,
-                    "The code change is inappropriate, unhelpful, or introduces new issues, Git diff does not align with instructions.",
+                    "The code change is inappropriate, unhelpful, or introduces new issues; the action did not result in any successful code changes. The Git diff does not match the pseud code and instructions, contains significant inaccuracies or shows no changes. Penalize attempts to modify non-existent code elements (hallucinations) based on severity.",
                 ),
                 (
                     -100,
                     -50,
-                    "The code change is counterproductive, causing significant setbacks or demonstrating persistent repetition without learning, Git diff is severely flawed.",
+                    "The code change is counterproductive, causing significant setbacks or demonstrating persistent repetition without learning. The Git diff is severely flawed or indicates that no effective changes were made. Heavily penalize severe hallucinations or continuous attempts to modify non-existent code elements.",
                 ),
             ]
         )
@@ -889,7 +904,7 @@ class RequestCodeChange(Action):
         return [
             FewShotExample.create(
                 user_input="Add error handling to the process_payment method in the PaymentProcessor class",
-                response=RequestCodeChangeArgs(
+                action=RequestCodeChangeArgs(
                     scratch_pad="We need to add try-catch blocks to handle potential payment processing errors.",
                     file_path="payment/processor.py",
                     instructions="Add error handling to catch and handle payment processing exceptions",
@@ -906,7 +921,7 @@ except PaymentError as e:
             ),
             FewShotExample.create(
                 user_input="Add import for the logging module",
-                response=RequestCodeChangeArgs(
+                action=RequestCodeChangeArgs(
                     scratch_pad="We need to add the logging import at the top of the file.",
                     file_path="utils/helper.py",
                     instructions="Add import for the logging module",

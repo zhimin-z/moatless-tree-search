@@ -90,10 +90,9 @@ def generate_summary(df: pd.DataFrame):
         st.altair_chart(final_chart, use_container_width=True)
 
 
-def trajectory_table(directory_path: str):
+def trajectory_table(report_path: str):
     st.header("Trajectory List")
 
-    report_path = os.path.join(directory_path, "report.json")
     if not os.path.exists(report_path):
         logger.error(f"Report file not found at {report_path}")
         return
@@ -137,7 +136,7 @@ def trajectory_table(directory_path: str):
         has_resolved_solutions = st.multiselect("Has Resolved Solutions", ["Yes", "No"])
     with col3:
         instance_filter = st.multiselect(
-            "Instance", df["instance"].unique(), key="instance_filter"
+            "Instance", df["instance_id"].unique(), key="instance_filter"
         )
     with col4:
         llmonkeys_rate_range = st.slider("LLMonkeys Rate (%)", 0, 100, (0, 100), 1)
@@ -147,7 +146,7 @@ def trajectory_table(directory_path: str):
     if status_filter:
         mask &= df["status"].isin(status_filter)
     if instance_filter:
-        mask &= df["instance"].isin(instance_filter)
+        mask &= df["instance_id"].isin(instance_filter)
     if has_resolved_solutions:
         if "Yes" in has_resolved_solutions:
             mask &= df["resolved_solutions"] > 0
@@ -172,9 +171,10 @@ def trajectory_table(directory_path: str):
 
     filtered_df = df[mask]
 
+    directory_path = os.path.dirname(report_path)
     # Create a column with clickable links using trajectory_path
     filtered_df["Select"] = filtered_df.apply(
-        lambda row: f'<a href="?trajectory_path={directory_path}/{row["instance_id"]}/trajectory.json">View</a>',
+        lambda row: f'<a href="?path={directory_path}/{row["instance_id"]}/trajectory.json">View</a>',
         axis=1,
     )
 

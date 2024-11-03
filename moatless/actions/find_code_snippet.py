@@ -53,14 +53,14 @@ class FindCodeSnippet(SearchBaseAction):
         return [
             FewShotExample.create(
                 user_input="Find the exact code snippet that defines the User class in our authentication module",
-                response=FindCodeSnippetArgs(
+                action=FindCodeSnippetArgs(
                     scratch_pad="To locate the User class definition in the authentication module, we should search for the exact code snippet that declares this class.",
                     code_snippet="class User(BaseModel):"
                 )
             ),
             FewShotExample.create(
                 user_input="Find where we define the DEFAULT_TIMEOUT constant in our configuration files",
-                response=FindCodeSnippetArgs(
+                action=FindCodeSnippetArgs(
                     scratch_pad="Looking for the specific line where DEFAULT_TIMEOUT is defined in configuration files.",
                     code_snippet="DEFAULT_TIMEOUT =",
                     file_pattern="**/config/*.py"

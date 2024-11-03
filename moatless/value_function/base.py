@@ -6,7 +6,8 @@ from pydantic import BaseModel, PrivateAttr
 from moatless.actions.action import Action, RewardScaleEntry
 from moatless.completion.completion import CompletionModel
 from moatless.completion.model import Message, UserMessage, Completion
-from moatless.node import Node, Reward
+from moatless.node import Node
+from moatless.value_function.model import Reward
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +23,7 @@ class ValueFunction(BaseModel):
         message = self._create_message(node)
         system_prompt = self._create_system_prompt(node)
 
-        return self._completion.create_completion([message], system_prompt, [Reward])
+        return self._completion.create_completion_with_response_model(messages=[message], system_prompt=system_prompt, response_model=Reward)
 
     def _create_system_prompt(self, node: Node) -> str:
         return self._build_system_prompt(node)
@@ -30,9 +31,9 @@ class ValueFunction(BaseModel):
     def _create_message(self, node: Node) -> Message:
         previous_nodes = node.get_trajectory()[:-1]
 
-        message = f"<problem_statement>\n"
+        message = f"<task>\n"
         message += node.get_root().message
-        message += "\n</problem_statement>\n\n"
+        message += "\n</task>\n\n"
 
         formatted_history: List[str] = []
         counter = 0
@@ -53,6 +54,7 @@ class ValueFunction(BaseModel):
                     logger.warning(f"No output found for Node{previous_node.node_id}")
 
         if formatted_history:
+            message += "Below is the history of previously executed actions and their outputs that led up to the current state.\n"
             message += "<history>\n"
             message += "\n".join(formatted_history)
             message += "\n</history>\n\n"
@@ -63,14 +65,16 @@ class ValueFunction(BaseModel):
             message += "</reasoning_for_completion>\n"
         else:
             message += "## Last Executed Action:\n"
-            message += "\n\n<executed_action>\n"
+            message += "Here is the most recent action that was executed and its output. This is the subject of your evaluation.\n"
+            message += "\n<executed_action>\n"
             message += node.action.to_prompt()
             message += f"\n\n**Output:**\n{node.observation.message}"
             if node.observation.extra:
                 message += f"\n{node.observation.extra}"
             message += "\n</executed_action>\n\n"
 
-        message += "\n<file_context>\n"
+        message += "Current state of relevant files and code context after the last executed action:\n"
+        message += "<file_context>\n"
         if node.file_context and not node.file_context.is_empty():
             message += node.file_context.create_prompt(
                 show_outcommented_code=True,
@@ -82,6 +86,7 @@ class ValueFunction(BaseModel):
         message += "\n</file_context>\n\n"
 
         full_patch = node.file_context.generate_git_patch()
+        message += "Changes made to the codebase so far:\n"
         if full_patch.strip():
             message += "<git_patch>\n"
             message += full_patch
@@ -121,7 +126,7 @@ class ValueFunction(BaseModel):
 """
 
         if node.possible_actions:
-            prompt += "\n\n# Possible Actions:\n"
+            prompt += "\n\n# Available Actions:\n"
             prompt += (
                 "The following actions were available for the agent to choose from:\n\n"
             )
@@ -129,7 +134,7 @@ class ValueFunction(BaseModel):
                 action = Action.get_action_by_name(action_name)
                 try:
                     schema = action.args_schema.model_json_schema()
-                    prompt += f"* **{schema['title']}**: {schema['description']}"
+                    prompt += f"\n * **{schema['title']}**: {schema['description']}"
                 except Exception as e:
                     logger.error(
                         f"Error while building prompt for action {action}: {e}"
@@ -139,7 +144,7 @@ class ValueFunction(BaseModel):
 
     @staticmethod
     def _format_evaluation_criteria(criteria_list: List[str]) -> str:
-        formatted_criteria = "# Evaluation Criteria:\n\n"
+        formatted_criteria = "\n# Evaluation Criteria:\n"
         for criterion in criteria_list:
             formatted_criteria += f"* {criterion}\n"
         return formatted_criteria
@@ -148,7 +153,7 @@ class ValueFunction(BaseModel):
     def _format_reward_scale(
         reward_scale_list: List[RewardScaleEntry], min_value: int, max_value: int
     ) -> str:
-        formatted_scale = "# Reward Scale and Guidelines:\n\n"
+        formatted_scale = "\n# Reward Scale and Guidelines:\n"
         sorted_entries = sorted(reward_scale_list, key=lambda x: -x.max_value)
 
         formatted_scale += f"The reward value must be an integer between {min_value} and {max_value}, where:\n\n"

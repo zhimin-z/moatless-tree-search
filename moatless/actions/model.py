@@ -164,8 +164,8 @@ class Observation(BaseModel):
 
 class FewShotExample(BaseModel):
     user_input: str = Field(..., description="The user's input/question")
-    response: ActionArguments = Field(..., description="The expected response as ActionArguments")
+    action: ActionArguments = Field(..., description="The expected response as ActionArguments")
 
     @classmethod
-    def create(cls, user_input: str, response: ActionArguments) -> "FewShotExample":
-        return cls(user_input=user_input, response=response)
+    def create(cls, user_input: str, action: ActionArguments) -> "FewShotExample":
+        return cls(user_input=user_input, action=action)

@@ -34,7 +34,7 @@ from moatless.file_context import FileContext
 from moatless.search_tree import SearchTree
 from moatless.selector import BestFirstSelector, SoftmaxSelector
 from moatless.templates import create_coding_actions
-from moatless.value_function import ValueFunction
+from moatless.value_function.base import ValueFunction
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +55,10 @@ class ModelSettings(BaseModel):
     api_key: Optional[str] = Field(
         None,
         description="The API key for the model API.",
+    )
+    max_tokens: Optional[int] = Field(
+        1000,
+        description="The maximum number of tokens to generate.",
     )
     response_format: Optional[LLMResponseFormat] = Field(
         LLMResponseFormat.TOOLS,
@@ -356,6 +360,7 @@ class Evaluation:
                         repository=repository,
                         instance=instance,
                         log_dir=log_dir,
+                        dataset_name=self.dataset_name,
                     )
                     system_prompt = SYSTEM_PROMPT  # Use default system prompt
                 else:
@@ -473,6 +478,7 @@ class Evaluation:
                             repository=repository,
                             instance=instance,
                             log_dir=log_dir,
+                            enable_cache=True,
                         )
 
                     for i, finished_node in enumerate(finished_nodes):
@@ -574,6 +580,7 @@ class Evaluation:
             temperature=model_settings.temperature,
             model_base_url=model_settings.base_url,
             model_api_key=model_settings.api_key,
+            max_tokens=model_settings.max_tokens,
             response_format=model_settings.response_format,
         )
 

@@ -13,8 +13,9 @@ from moatless.index.code_index import CodeIndex
 from moatless.node import Node, generate_ascii_tree
 from moatless.repository.repository import Repository
 from moatless.selector import BestFirstSelector, Selector, SoftmaxSelector
-from moatless.value_function import ValueFunction
+from moatless.value_function.base import ValueFunction
 from moatless.runtime.runtime import RuntimeEnvironment
+from moatless.exceptions import RuntimeError, RejectError
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +87,7 @@ class SearchTree(BaseModel):
         min_finished_nodes: Optional[int] = None,
         max_finished_nodes: Optional[int] = None,
         reward_threshold: Optional[float] = None,
+        simulation_depth: int = 1,
         max_depth: int = 10,
     ) -> "SearchTree":
         if not root and not message:
@@ -281,12 +283,19 @@ class SearchTree(BaseModel):
         if not node.observation:
             self.agent.run(node)
 
-        if self.value_function:
-            node.reward, completion_response = self.value_function.get_reward(node=node)
-            node.completions["value_function"] = completion_response
-            logger.info(
-                f"Node{node.node_id}: The value function returned a reward of {node.reward.value}."
-            )
+        if self.value_function and not node.is_duplicate and node.observation:
+            try:
+                node.reward, completion_response = self.value_function.get_reward(node=node)
+                node.completions["value_function"] = completion_response
+                logger.info(
+                    f"Node{node.node_id}: The value function returned a reward of {node.reward.value}."
+                )
+            except RejectError as e:
+                logger.warning(f"Node{node.node_id}: Value function rejected: {e.message}")
+                node.reward = None
+            except RuntimeError as e:
+                logger.error(f"Node{node.node_id}: Value function runtime error: {e.message}")
+                raise  # Re-raise to abort the entire search
 
     def _backpropagate(self, node: Node):
         """Backpropagate the reward up the tree."""
@@ -351,6 +360,9 @@ class SearchTree(BaseModel):
                 finished_nodes.append(node)
 
         return finished_nodes
+
+    def get_node_by_id(self, node_id: int) -> Node | None:
+        return next((node for node in self.root.get_all_nodes() if node.node_id == node_id), None)
 
     def get_leaf_nodes(self) -> List[Node]:
         """Get all leaf nodes in the search tree."""

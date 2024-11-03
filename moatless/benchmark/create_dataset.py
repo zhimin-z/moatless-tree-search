@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import sys
 
@@ -11,19 +12,33 @@ from moatless.repository import FileRepository
 
 def read_predictions(pred_path: str):
     predictions = {}
-    with open(pred_path) as f:
-        for line in f.readlines():
-            prediction = json.loads(line)
-            predictions[prediction["instance_id"]] = prediction["model_patch"]
+
+    try:
+        with open(pred_path) as f:
+            try:
+                all_preds = json.load(f)
+            except json.JSONDecodeError:
+                all_preds = []
+
+            if not all_preds:
+                for line in f.readlines():
+                    all_preds.append(json.loads(line))
+
+            for prediction in all_preds:
+                predictions[prediction["instance_id"]] = prediction["model_patch"]
+
+    except Exception as e:
+        print(f"Error reading predictions from {pred_path}: {e}")
+        raise e
     return predictions
 
 
 def generate_report(
-    dataset_path=str, dataset_name: str = "princeton-nlp/SWE-bench_Lite"
+    dataset_path: str,
+    experiments_dir: str,
+    dataset_name: str = "princeton-nlp/SWE-bench_Lite",
 ):
     results = {}
-
-    experiments_dir = "/home/albert/repos/stuffs/experiments/evaluation/lite"
 
     runs = []
     for run_name in os.listdir(experiments_dir):
@@ -62,7 +77,7 @@ def generate_report(
         instance_id = instance["instance_id"]
         print(f"Processing {instance_id} ({i}/{len(instances)})")
         repo_dir = setup_swebench_repo(instance, repo_base_dir="/tmp/repos_2")
-        file_repo = FileRepository(repo_dir)
+        file_repo = FileRepository(repo_path=repo_dir)
 
         expected_file_spans = get_file_spans_from_patch(file_repo, instance["patch"])
         test_file_spans = get_file_spans_from_patch(file_repo, instance["test_patch"])
@@ -82,6 +97,9 @@ def generate_report(
             "alternative_spans": [],
         }
 
+        max_files = len(expected_file_spans.keys())
+        min_files = len(expected_file_spans.keys())
+
         for run_name, _, _ in runs:
             prediction = results[run_name]["predictions"].get(instance_id)
 
@@ -89,6 +107,12 @@ def generate_report(
                 continue
 
             file_spans = get_file_spans_from_patch(file_repo, prediction)
+
+            if len(file_spans.keys()) > max_files:
+                max_files = len(file_spans.keys())
+
+            if len(file_spans.keys()) < min_files:
+                min_files = len(file_spans.keys())
 
             is_different = False
             alternative_spans = {}
@@ -116,6 +140,9 @@ def generate_report(
             {
                 "instance_id": instance_id,
                 "resolved_by": len(evaluation_instance["resolved_by"]),
+                "max_files": max_files,
+                "min_files": min_files,
+                "expected_files": len(expected_file_spans.keys()),
             }
         )
 
@@ -128,5 +155,8 @@ def generate_report(
 
 
 if __name__ == "__main__":
-    dataset_path = sys.argv[1]
-    df = generate_report(dataset_path, "princeton-nlp/SWE-bench_Lite")
+    dataset_path = "swebench_verified_all_evaluations.json"
+    df = generate_report(dataset_path, experiments_dir="/home/albert/repos/stuffs/experiments/evaluation/verified", dataset_name="princeton-nlp/SWE-bench_Verified")
+
+    # df to csv
+    df.to_csv('evaluation_dataset.csv', index=False)

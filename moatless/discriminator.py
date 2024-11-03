@@ -48,6 +48,27 @@ class MeanAwardDiscriminator(Discriminator):
             return None
 
 
+class BestRewardDiscriminator(Discriminator):
+
+    def select(self, nodes: List[Node]) -> Node | None:
+        best_finish_node: Node | None = None
+
+        for finished_node in nodes:
+            if best_finish_node is None or finished_node.reward.value > best_finish_node.reward.value:
+                best_finish_node = finished_node
+
+        if best_finish_node:
+            logger.info(
+                f"Best finished path finished on Node{best_finish_node.node_id} with reward: {best_finish_node.reward.value}"
+            )
+            return best_finish_node
+        else:
+            logger.info(
+                "No valid finished path found. This should not happen if there are finished nodes."
+            )
+            return None
+
+
 class AgentDiscriminatorChoice(OpenAISchema):
     ID: int
     EXPLANATION: str

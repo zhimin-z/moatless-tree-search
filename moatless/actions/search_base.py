@@ -218,7 +218,7 @@ class SearchBaseAction(Action):
             )
 
     @classmethod
-    def model_validate(cls, obj: Any) -> "RunTests":
+    def model_validate(cls, obj: Any) -> "SearchBaseAction":
         if isinstance(obj, dict):
             obj = obj.copy()
             repository = obj.pop("repository")

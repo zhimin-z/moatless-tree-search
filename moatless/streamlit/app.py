@@ -20,11 +20,11 @@ def main():
     container = st.container()
 
     # Get file path from command line args if provided
-    if len(sys.argv) > 1:
+    if "path" in st.query_params:
+        file_path = st.query_params["path"]
+    elif len(sys.argv) > 1:
         file_path = sys.argv[1]
         st.query_params["path"] = file_path
-    elif "path" in st.query_params:
-        file_path = st.query_params["path"]
     else:
         file_path = None
 
@@ -45,13 +45,12 @@ def main():
             
             if file_name == "report.json":
                 with st.spinner("Loading report..."):
-                    df = pd.read_json(file_path)
-                    trajectory_table(df)
+                    trajectory_table(file_path)
             else:
                 with st.spinner("Loading search tree from trajectory file"):
                     st.session_state.search_tree = SearchTree.from_file(file_path)
-                    st.session_state.selected_tree_path = file_name
-                    update_visualization(container, st.session_state.search_tree, st.session_state.selected_tree_path)
+                    # directory path
+                    update_visualization(container, st.session_state.search_tree, file_path)
         else:
             st.error("The specified file does not exist. Please check the path and try again.")
 
