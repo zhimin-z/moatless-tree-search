@@ -326,17 +326,14 @@ class SearchTree(BaseModel):
 
         finished_nodes = self.get_finished_nodes()
 
-        if self.reward_threshold and not any(
+        if self.max_finished_nodes and len(finished_nodes) >= self.max_finished_nodes:
+            return True
+
+        if self.reward_threshold and any(
             node.reward and node.reward.value >= self.reward_threshold
             for node in finished_nodes
         ):
-            return False
-
-        if self.min_finished_nodes and len(finished_nodes) >= self.min_finished_nodes:
-            return True
-
-        if self.max_finished_nodes and len(finished_nodes) >= self.max_finished_nodes:
-            return True
+            return not self.min_finished_nodes or len(finished_nodes) >= self.min_finished_nodes
 
         if not self.root.get_expandable_descendants():
             return True

@@ -2,11 +2,12 @@ import logging
 import math
 import random
 from dataclasses import dataclass
-from typing import List, Type, Literal, Dict, Any
+from typing import List, Type, Literal, Dict, Any, Optional, Tuple
 
 import numpy as np
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr
 
+from moatless.selector.similarity import calculate_similarity
 from moatless.node import Node
 
 logger = logging.getLogger(__name__)
@@ -25,6 +26,7 @@ class UCTScore:
     high_value_parent_bonus: float
     finished_trajectory_penalty: float
     expect_correction_bonus: float
+    diversity_bonus: float
 
     def __str__(self):
         components = [
@@ -39,6 +41,7 @@ class UCTScore:
             f"High Value Parent Bonus: {self.high_value_parent_bonus:.2f}",
             f"Finished Trajectory Penalty: {self.finished_trajectory_penalty:.2f}",
             f"Expect Correction Bonus: {self.expect_correction_bonus:.2f}",
+            f"Diversity Bonus: {self.diversity_bonus:.2f}",
         ]
         return ", ".join(components)
 
@@ -95,6 +98,12 @@ class Selector(BaseModel):
         default_factory=lambda: ["RequestCodeChange"],
         description="List of action types to check for when calculating the high value bad children bonus.",
     )
+    diversity_weight: float = Field(
+        default=0.0,
+        description="Weight factor for the diversity bonus. Higher values increase the bonus for nodes with low similarity to other explored nodes."
+    )
+
+    _similarity_cache: Dict[Tuple[int, int], float] = PrivateAttr(default_factory=dict)
 
     def select(self, expandable_nodes: List[Node]) -> Node:
         raise NotImplementedError("Subclasses must implement the select method.")
@@ -107,7 +116,7 @@ class Selector(BaseModel):
         balancing exploration and exploitation while considering node-specific factors.
         """
         if node.visits == 0:
-            return UCTScore(float("inf"), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+            return UCTScore(float("inf"), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
 
         exploitation = self.calculate_exploitation(node)
         exploration = self.calculate_exploration(node)
@@ -121,6 +130,7 @@ class Selector(BaseModel):
         high_value_parent_bonus = self.calculate_high_value_parent_bonus(node)
         finished_trajectory_penalty = self.calculate_finished_trajectory_penalty(node)
         expect_correction_bonus = self.calculate_expect_correction_bonus(node)
+        diversity_bonus = self.calculate_diversity_bonus(node)
 
         final_score = (
             exploitation
@@ -133,6 +143,7 @@ class Selector(BaseModel):
             + high_value_parent_bonus
             - finished_trajectory_penalty
             + expect_correction_bonus
+            + diversity_bonus
         )
 
         return UCTScore(
@@ -147,6 +158,7 @@ class Selector(BaseModel):
             high_value_parent_bonus=high_value_parent_bonus,
             finished_trajectory_penalty=finished_trajectory_penalty,
             expect_correction_bonus=expect_correction_bonus,
+            diversity_bonus=diversity_bonus,
         )
 
     def calculate_exploitation(self, node: Node) -> float:
@@ -316,12 +328,57 @@ class Selector(BaseModel):
         as the parent node accumulates more children, encouraging exploration of less-visited
         correction paths.
         """
-        if node.observation and node.observation.expect_correction:
+        if (node.observation and node.observation.expect_correction and
+                not (node.parent and node.parent.observation and node.parent.observation.expect_correction)):  # TODO: Set parent as decay factor  instead?
             # Use a more aggressive decay factor
             decay_factor = 1 / (1 + len(node.children) ** 2)
             return self.expect_correction_bonus * decay_factor
 
         return 0
+
+    def calculate_diversity_bonus(self, node: Node) -> float:
+        """
+        Calculate the diversity bonus based on the similarity of the node's solution to other expandable nodes.
+
+        Purpose: Boosts the score for nodes whose solutions have low similarity to other explored nodes,
+        encouraging the exploration of novel solutions.
+        """
+        if not self.diversity_weight:
+            return 0
+
+        expandable_nodes = [n for n in node.get_root().get_expandable_descendants() if n.node_id != node.node_id]
+
+        if not expandable_nodes:
+            # No other nodes to compare; return maximum bonus
+            return self.diversity_weight
+
+        similarities = []
+        for other_node in expandable_nodes:
+            similarity = self.get_similarity(node, other_node)
+            similarities.append(similarity)
+
+        # Compute the average similarity
+        average_similarity = sum(similarities) / len(similarities)
+
+        # Diversity bonus is proportional to (1 - average_similarity)
+        diversity_bonus = self.diversity_weight * (1 - average_similarity)
+
+        return diversity_bonus
+
+    def get_similarity(self, node_a: Node, node_b: Node) -> float:
+        """
+        Retrieve the similarity between two nodes from the cache or compute it if not cached.
+        """
+        if node_a.file_context is None or node_b.file_context is None:
+            return 0.0
+
+        node_ids = (min(node_a.node_id, node_b.node_id), max(node_a.node_id, node_b.node_id))
+        if node_ids in self._similarity_cache:
+            return self._similarity_cache[node_ids]
+
+        similarity = calculate_similarity(node_a.file_context, node_b.file_context)
+        self._similarity_cache[node_ids] = similarity
+        return similarity
 
     @classmethod
     def model_validate(cls: Type["Selector"], obj: Any) -> "Selector":
@@ -356,9 +413,9 @@ class BestFirstSelector(Selector):
 
         # Log top nodes with detailed score breakdowns
         top_nodes = sorted_nodes[: min(len(sorted_nodes), 10)]
-        logger.debug("Comparing top nodes:")
+        logger.info("Comparing top nodes:")
         for i, (node, score) in enumerate(top_nodes):
-            logger.debug(
+            logger.info(
                 f"Node {node.node_id} - Visits: {node.visits} - "
                 f"Reward: {node.reward.value if node.reward else '-'} - "
                 f"\nScore components: {score}"

@@ -5,7 +5,7 @@ from typing import Optional, List, Union, Tuple, Any, Type, ClassVar
 from pydantic import Field, PrivateAttr
 
 from moatless.actions.action import Action
-from moatless.actions.model import ActionArguments, Observation, RewardScaleEntry
+from moatless.actions.model import ActionArguments, FewShotExample, Observation, RewardScaleEntry
 from moatless.codeblocks import CodeBlock, get_parser_by_path
 from moatless.codeblocks.codeblocks import CodeBlockTypeGroup, CodeBlockType
 from moatless.codeblocks.module import Module
@@ -118,7 +118,7 @@ class RequestCodeChange(Action):
     args_schema: ClassVar[Type[ActionArguments]] = RequestCodeChangeArgs
 
     max_tokens_in_edit_prompt: int = Field(
-        default=500,
+        default=750,
         description="The maximum number of tokens allowed in the edit prompt.",
     )
     show_file_context: bool = Field(
@@ -883,3 +883,37 @@ class RequestCodeChange(Action):
             )
 
         return cls(**obj)
+
+    @classmethod
+    def get_few_shot_examples(cls) -> List[FewShotExample]:
+        return [
+            FewShotExample.create(
+                user_input="Add error handling to the process_payment method in the PaymentProcessor class",
+                response=RequestCodeChangeArgs(
+                    scratch_pad="We need to add try-catch blocks to handle potential payment processing errors.",
+                    file_path="payment/processor.py",
+                    instructions="Add error handling to catch and handle payment processing exceptions",
+                    pseudo_code="""try:
+    result = self._process_transaction(payment_data)
+    return result
+except PaymentError as e:
+    logger.error(f"Payment processing failed: {e}")
+    raise PaymentProcessingError(f"Failed to process payment: {e}")""",
+                    change_type=ChangeType.modification,
+                    start_line=45,
+                    end_line=47
+                )
+            ),
+            FewShotExample.create(
+                user_input="Add import for the logging module",
+                response=RequestCodeChangeArgs(
+                    scratch_pad="We need to add the logging import at the top of the file.",
+                    file_path="utils/helper.py",
+                    instructions="Add import for the logging module",
+                    pseudo_code="import logging",
+                    change_type=ChangeType.addition,
+                    start_line=1,
+                    end_line=1
+                )
+            )
+        ]

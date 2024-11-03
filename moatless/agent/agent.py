@@ -1,7 +1,8 @@
 import logging
 from typing import List, Type, Tuple, Dict, Any, Optional
+import importlib
 
-from pydantic import BaseModel, Field, PrivateAttr
+from pydantic import BaseModel, Field, PrivateAttr, model_validator
 
 from moatless.actions.action import Action
 from moatless.actions.model import ActionArguments, Observation
@@ -37,6 +38,12 @@ class ActionAgent(BaseModel):
         super().__init__(actions=actions, system_prompt=system_prompt)
         self._completion = completion
         self._action_map = actions_map
+
+    @model_validator(mode="after")
+    def verify_system_prompt(self) -> "ActionAgent":
+        if self.system_prompt == "":
+            self.system_prompt = None
+        return self
 
     def run(self, node: Node):
         self._generate_action(node)
@@ -109,7 +116,7 @@ class ActionAgent(BaseModel):
             raise Exception(f"Action {node.action} not found in action map.")
 
     def _create_system_prompt(self, possible_actions: List[Action]) -> str:
-        return self.system_prompt or ""
+        return self.system_prompt
 
     def _create_messages(self, node: Node) -> list[Message]:
         messages: list[Message] = []
@@ -210,6 +217,7 @@ class ActionAgent(BaseModel):
         dump = super().model_dump(**kwargs)
         dump["completion"] = self._completion.model_dump(**kwargs)
         dump["actions"] = []
+        dump["agent_class"] = f"{self.__class__.__module__}.{self.__class__.__name__}"
         for action in self.actions:
             action_dump = action.model_dump(**kwargs)
             action_dump["action_class"] = (
@@ -229,6 +237,7 @@ class ActionAgent(BaseModel):
         if isinstance(obj, dict):
             obj = obj.copy()
             completion_data = obj.pop("completion", None)
+            agent_class_path = obj.pop("agent_class", None)
 
             if completion_data:
                 completion = CompletionModel.model_validate(completion_data)
@@ -246,10 +255,17 @@ class ActionAgent(BaseModel):
                     for action_data in obj.get("actions", [])
                 ]
             else:
-                logger.debug(f"No repository provided, skip iniating acitons")
+                logger.debug(f"No repository provided, skip initiating actions")
                 actions = []
 
-            instance = cls(actions=actions, completion=completion)
+            if agent_class_path:
+                module_name, class_name = agent_class_path.rsplit(".", 1)
+                module = importlib.import_module(module_name)
+                agent_class = getattr(module, class_name)
+                instance = agent_class(actions=actions, completion=completion)
+            else:
+                instance = cls(actions=actions, completion=completion)
+
             instance._action_map = {action.args_schema: action for action in actions}
             return instance
 

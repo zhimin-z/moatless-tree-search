@@ -1,14 +1,14 @@
 import logging
 from typing import List, Type
+import json
 
 from moatless.actions.action import Action
 from moatless.actions.code_change import RequestCodeChange
 from moatless.actions.finish import Finish
 from moatless.actions.reject import Reject
-from moatless.actions.request_context import RequestMoreContext
 from moatless.actions.run_tests import RunTests
 from moatless.agent.agent import ActionAgent
-from moatless.agent.code_prompts import SYSTEM_PROMPT, FEW_SHOT_JSON
+from moatless.agent.code_prompts import SYSTEM_PROMPT
 from moatless.completion.completion import (
     LLMResponseFormat,
 )
@@ -25,7 +25,20 @@ class CodingAgent(ActionAgent):
             prompt = SYSTEM_PROMPT
 
         if self.completion.response_format == LLMResponseFormat.JSON:
-            prompt += "\n\n" + FEW_SHOT_JSON
+            few_shot_examples = []
+            for action in possible_actions:
+                examples = action.get_few_shot_examples()
+                if examples:
+                    few_shot_examples.extend(examples)
+            
+            if few_shot_examples:
+                prompt += "\n\nHere are some examples of how to use the available actions:\n\n"
+                for example in few_shot_examples:
+                    action_json = {
+                        "action": example.response.model_dump(),
+                        "action_type": example.response.__class__.__name__
+                    }
+                    prompt += f"User: {example.user_input}\nAssistant: ```json\n{json.dumps(action_json, indent=2)}\n```\n\n"
 
         return prompt
 

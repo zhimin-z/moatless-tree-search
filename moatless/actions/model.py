@@ -47,6 +47,27 @@ class ActionArguments(OpenAISchema, ABC):
         return prompt
 
     @classmethod
+    def parse_json(
+        cls: type[BaseModel],
+        completion: ChatCompletion,
+        validation_context: Optional[dict[str, Any]] = None,
+        strict: Optional[bool] = None,
+    ) -> BaseModel:
+        message = completion.choices[0].message.content or ""
+
+        # Because Qwen-2.5-72B-Instruct keeps adding those to the responses...
+        if '\x00' in message:
+            logger.info(f"parse_json() Replace \x00 in: {message}")
+            message = message.replace('\x00', '')
+        message = extract_json_from_codeblock(message)
+
+        return cls.model_validate_json(
+            message,
+            context=validation_context,
+            strict=strict,
+        )
+
+    @classmethod
     def get_action_args(cls, action_name: str) -> Type["ActionArguments"]:
         """
         Dynamically import and return the appropriate ActionArguments class for the given action.
@@ -139,3 +160,12 @@ class Observation(BaseModel):
     @classmethod
     def create(cls, message: str, terminal: bool = False):
         return cls(message=message, terminal=terminal)
+
+
+class FewShotExample(BaseModel):
+    user_input: str = Field(..., description="The user's input/question")
+    response: ActionArguments = Field(..., description="The expected response as ActionArguments")
+
+    @classmethod
+    def create(cls, user_input: str, response: ActionArguments) -> "FewShotExample":
+        return cls(user_input=user_input, response=response)

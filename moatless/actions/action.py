@@ -6,7 +6,7 @@ from typing import List, Type, Tuple, Any, Dict, Optional, ClassVar
 
 from pydantic import BaseModel, ConfigDict
 
-from moatless.actions.model import ActionArguments, Observation, RewardScaleEntry
+from moatless.actions.model import ActionArguments, Observation, RewardScaleEntry, FewShotExample
 from moatless.file_context import FileContext
 from moatless.index import CodeIndex
 from moatless.repository.repository import Repository
@@ -53,7 +53,7 @@ class Action(BaseModel, ABC):
             return [
                 "Solution Quality: Assess the logical changes, contextual fit, and overall improvement without introducing new issues.",
                 "Progress Assessment: Evaluate the agent's awareness of solution history, detection of repetitive actions, and planned next steps.",
-                "Repetitive Actions: Detect if the agent is repeating the same unsuccessful actions without making progress and penalize accordingly.",
+                "Repetitive or Redundant Actions: Detect if the agent is repeating the same unsuccessful or redundant actions without making progress. Pay close attention to the agent's history and outputs indicating lack of progress.",
             ]
 
     @classmethod
@@ -82,12 +82,12 @@ class Action(BaseModel, ABC):
             RewardScaleEntry(
                 min_value=-49,
                 max_value=-1,
-                description="The action is inappropriate or shows a lack of progress.",
+                description="The code change is inappropriate, unhelpful, introduces new issues, or redundantly repeats previous changes without making further progress. The Git diff does not align with instructions or is unnecessary.",
             ),
             RewardScaleEntry(
                 min_value=-100,
                 max_value=-50,
-                description="The action is counterproductive or demonstrates persistent repetition without learning.",
+                description="The code change is counterproductive, causing significant setbacks or demonstrating persistent repetition without learning. The agent fails to recognize completed tasks and continues to attempt redundant actions.",
             ),
         ]
 
@@ -223,3 +223,11 @@ At this stage, the agent is still working on the solution. Your task is twofold:
             for name, obj in module.__dict__.items():
                 if isinstance(obj, type) and issubclass(obj, Action) and obj != Action:
                     _actions[name] = obj
+
+    @classmethod
+    def get_few_shot_examples(cls) -> List[FewShotExample]:
+        """
+        Returns a list of few-shot examples specific to this action.
+        Override this method in subclasses to provide custom examples.
+        """
+        return []

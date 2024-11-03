@@ -369,6 +369,16 @@ class CodeIndex:
 
         paths = []
 
+        # If class name is provided only find the clasees and then filter on function name if necessary
+        if class_name:
+            paths = self._blocks_by_class_name.get(class_name, [])
+        elif function_name:
+            paths = self._blocks_by_function_name.get(function_name, [])
+        else:
+            raise ValueError(
+                "At least one of class_name or function_name must be provided."
+            )
+
         if file_pattern:
             include_files = self._file_repo.matching_files(file_pattern)
 
@@ -379,11 +389,12 @@ class CodeIndex:
                         filtered_paths.append((file_path, block_path))
 
                 filtered_out_by_file_pattern = len(paths) - len(filtered_paths)
-                if filtered_paths:
+                if filtered_out_by_file_pattern:
                     logger.debug(
                         f"find_by_name() Filtered out {filtered_out_by_file_pattern} files by file pattern."
                     )
-                    paths = filtered_paths
+                paths = filtered_paths
+
             elif "*" not in file_pattern and not self._file_repo.file_exists(
                 file_pattern
             ):
@@ -396,16 +407,6 @@ class CodeIndex:
                     message=f"No files found for file pattern {file_pattern}.",
                     hits=[],
                 )
-
-        # If class name is provided only find the clasees and then filter on function name if necessary
-        if class_name:
-            paths = self._blocks_by_class_name.get(class_name, [])
-        elif function_name:
-            paths = self._blocks_by_function_name.get(function_name, [])
-        else:
-            raise ValueError(
-                "At least one of class_name or function_name must be provided."
-            )
 
         logger.info(
             f"find_by_name(class_name={class_name}, function_name={function_name}, file_pattern={file_pattern}) {len(paths)} hits."
