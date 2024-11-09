@@ -81,8 +81,10 @@ class RequestMoreContext(Action):
         super().__init__(**data)
         self._repository = repository
 
-    # TODO?
-    _max_tokens_in_edit_prompt = 750
+    max_tokens: int = Field(
+        2000,
+        description="The maximum number of tokens in the requested code.",
+    )
 
     def execute(
         self, args: RequestMoreContextArgs, file_context: FileContext
@@ -94,6 +96,7 @@ class RequestMoreContext(Action):
 
         properties = {"files": {}}
         message = ""
+        found_files = set()
 
         for file_with_spans in args.files:
             file = file_context.get_file(file_with_spans.file_path)
@@ -159,9 +162,19 @@ class RequestMoreContext(Action):
                     if block_span.initiating_block.type == CodeBlockType.CLASS:
                         class_block = block_span.initiating_block
                         found_span_ids.add(block_span.span_id)
-                        if class_block.sum_tokens() < self._max_tokens_in_edit_prompt:
-                            for child_span_id in class_block.span_ids:
-                                found_span_ids.add(child_span_id)
+                        class_tokens = class_block.sum_tokens()
+                        if class_tokens > self.max_tokens:
+                            content = class_block.to_prompt(include_block_types=[CodeBlockType.FUNCTION, CodeBlockType.CLASS, CodeBlockType.CONSTRUCTOR])
+                            return Observation(
+                                message=f"The class {class_block.identifier} is too large ({class_tokens} tokens) to view in its entirety. Maximum allowed is {self.max_tokens} tokens. "
+                                        f"Please specify the functions with RequestMoreContext to view specific code.\n"
+                                        f"Here's a structure of the class {content}",
+                                properties={"fail_reason": "too_many_tokens"},
+                                expect_correction=True,
+                            )
+                        else:
+                            found_span_ids.update(class_block.get_all_span_ids())
+
                     else:
                         found_span_ids.add(block_span.span_id)
 
@@ -181,10 +194,12 @@ class RequestMoreContext(Action):
                     file_with_spans.start_line,
                     file_with_spans.end_line,
                 )
+                found_files.add(file_with_spans.file_path)
 
             for span_id in file_with_spans.span_ids:
                 if not file_context.has_span(file_with_spans.file_path, span_id):
                     file_context.add_span_to_context(file_with_spans.file_path, span_id)
+                    found_files.add(file_with_spans.file_path)
 
             if missing_span_ids:
                 logger.info(

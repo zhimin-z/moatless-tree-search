@@ -196,10 +196,16 @@ class CodeIndex:
             else:
                 exclude_files = []
 
-            matching_files = self._file_repo.matching_files(file_pattern)
-            matching_files = [
-                file for file in matching_files if file not in exclude_files
-            ]
+            try:
+                matching_files = self._file_repo.matching_files(file_pattern)
+                matching_files = [
+                    file for file in matching_files if file not in exclude_files
+                ]
+            except Exception as e:
+                return SearchCodeResponse(
+                    message=f"The file pattern {file_pattern} is invalid.",
+                    hits=[],
+                )
 
             if not matching_files:
                 if "*" not in file_pattern and not self._file_repo.file_exists(
@@ -235,12 +241,12 @@ class CodeIndex:
             file = self._file_repo.get_file(search_hit.file_path)
             if not file:
                 logger.warning(
-                    f"semantic_search(query={query}, file_pattern={file_pattern}) Could not find file {search_hit.file_path}."
+                    f"semantic_search(query={query}, file_pattern={file_pattern}) Could not find search hit file {search_hit.file_path}."
                 )
                 continue
             elif not file.module:
                 logger.warning(
-                    f"semantic_search(query={query}, file_pattern={file_pattern}) Could not parse module for file {search_hit.file_path}."
+                    f"semantic_search(query={query}, file_pattern={file_pattern}) Could not parse module for search hit file {search_hit.file_path}."
                 )
                 continue
 

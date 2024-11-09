@@ -115,12 +115,6 @@ class ApplyCodeChangeAndTest(RequestCodeChange):
         observation.properties.update(test_observation.properties)
         observation.message += "\n\n" + test_observation.message
 
-        if test_observation.extra:
-            if observation.extra:
-                observation.extra += "\n\n" + test_observation.extra
-            else:
-                observation.extra = test_observation.extra
-
         return observation
 
     def get_evaluation_criteria(cls, trajectory_length) -> List[str]:
@@ -149,7 +143,7 @@ class ApplyCodeChangeAndTest(RequestCodeChange):
             (
                 25,
                 49,
-                "The code change is acceptable but has noticeable issues; AND tests have noticeable failures that may have been foreseeable but can be addressed with effort.",
+                "The code change is acceptable but has noticeable issues; AND tests have noticeable failures that may have been foreseeable but can be addressed with effort, like missing import statements.",
             ),
             (
                 0,
