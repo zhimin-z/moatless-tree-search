@@ -15,7 +15,6 @@ from moatless.benchmark.utils import (
     get_missing_files,
     get_moatless_instance,
     read_search_trees,
-    get_moatless_instances,
 )
 from moatless.file_context import FileContext
 from moatless.index.code_index import is_test
@@ -107,9 +106,11 @@ class TrajectoryStats(BaseModel):
     test_edits: int = 0
     failed_actions: int = 0
     expect_corrections: int = 0
+    max_repeated_actions: int = 0
+    fail_reasons: list[str] = []
 
     missing_test_files: int = 0
-    
+
     max_tests_run: int = 0
     max_failed_tests: int = 0
     initial_failed_tests: Optional[int] = None
@@ -162,6 +163,8 @@ class BenchmarkResult(BaseModel):
     test_edits: int = 0
     failed_actions: int = 0
     expect_corrections: int = 0
+    max_repeated_actions: int = 0
+    fail_reasons: list[str] = []
 
     context_stats: FileContextStats | None = None
     actions: dict[str, int] = {}
@@ -207,26 +210,56 @@ def create_trajectory_stats(
     )
     nodes = trajectory_state.get_trajectory()
 
+    last_action = None
+    current_repeated = 1
     test_files = []
     for node in nodes:
         if node.action:
-            if node.action.name not in result.actions:
-                result.actions[node.action.name] = 0
+            action_name = node.action.name
+            if action_name == "str_replace_editor":
+                action_name = node.action.command
 
-            result.actions[node.action.name] += 1
+            if not last_action or last_action != action_name:
+                last_action = action_name
+                current_repeated = 1
+            else:
+                current_repeated += 1
+                result.max_repeated_actions = max(
+                    result.max_repeated_actions, current_repeated
+                )
+
+            if action_name not in result.actions:
+                result.actions[action_name] = 0
+
+            result.actions[action_name] += 1
 
             if node.observation and node.observation.expect_correction:
                 result.expect_corrections += 1
 
-            if (
-                node.observation
-                and node.observation.properties
-            ):
+            if node.observation and node.observation.properties:
                 if "test_results" in node.observation.properties:
                     test_results = node.observation.properties["test_results"]
-                    failed_test_count = sum(
-                        1 for test in test_results if test["status"] in ["FAILED", "ERROR"]
-                    )
+                    failed_tests = [
+                        test
+                        for test in test_results
+                        if test["status"] in ["FAILED", "ERROR"]
+                    ]
+
+                    for failed_test in failed_tests:
+                        file_paths_in_context = [
+                            file.file_path for file in node.file_context.files
+                        ]
+                        if (
+                            failed_test["file_path"]
+                            and not failed_test["file_path"] in file_paths_in_context
+                        ):
+                            if not "test_not_in_context" in result.fail_reasons:
+                                logger.warning(
+                                    f"{instance['instance_id']} {node.node_id} Test file not in context: {failed_test['file_path']}. Files in context {file_paths_in_context}"
+                                )
+                                result.fail_reasons.append("test_not_in_context")
+
+                    failed_test_count = len(failed_tests)
 
                     result.initial_failed_tests = failed_test_count
 
@@ -246,6 +279,14 @@ def create_trajectory_stats(
                 if "fail_reason" in node.observation.properties:
                     result.failed_actions += 1
 
+                    if (
+                        node.observation.properties["fail_reason"]
+                        not in result.fail_reasons
+                    ):
+                        result.fail_reasons.append(
+                            node.observation.properties["fail_reason"]
+                        )
+
             if node.action.name == "RequestCodeChange":
                 if node.observation:
                     if is_test(node.action.file_path):
@@ -254,7 +295,12 @@ def create_trajectory_stats(
                         result.edits += 1
 
             if "build_action" in node.completions:
-                result.max_build_tokens = max(result.max_build_tokens, node.completions["build_action"].usage.prompt_tokens + node.completions["build_action"].usage.completion_tokens + node.completions["build_action"].usage.cached_tokens)
+                result.max_build_tokens = max(
+                    result.max_build_tokens,
+                    node.completions["build_action"].usage.prompt_tokens
+                    + node.completions["build_action"].usage.completion_tokens
+                    + node.completions["build_action"].usage.cached_tokens,
+                )
 
         missing_test_files = get_missing_files(instance["test_file_spans"], test_files)
 
@@ -324,13 +370,6 @@ def to_result(
     if not eval_report:
         eval_report = {}
 
-    if external_result:
-        resolved = info.get("instance_id", "") in external_result["resolved_ids"]
-    elif eval_report and eval_report.get("resolved") is not None:
-        resolved = eval_report.get("resolved")
-    else:
-        resolved = None
-
     if previous_result:
         previous_resolved = (
             info.get("instance_id", "") in previous_result["resolved_ids"]
@@ -339,31 +378,44 @@ def to_result(
         previous_resolved = None
 
     try:
-        best_node = search_tree.get_best_trajectory()
+        resolved = None
         best_stats = None
+        best_node = None
 
-        if best_node:
-            best_stats = create_trajectory_stats(
-                best_node,
-                instance,
-                eval_report.get("node_results", {}).get(str(best_node.node_id))
-            )
-
-        if resolved is not None and resolved:
-            status = "resolved"
-        elif resolved is not None and not resolved:
-            status = "failed"
-        elif search_tree.is_finished():
-            status = "finished"
+        if not search_tree.is_finished():
+            status = "running"
         else:
-            status = "running"  # TODO: Abandoned?
+            best_node = search_tree.get_best_trajectory()
+            if best_node:
+                best_stats = create_trajectory_stats(
+                    best_node,
+                    instance,
+                    eval_report.get("node_results", {}).get(str(best_node.node_id)),
+                )
+                status = best_stats.status
+            else:
+                status = "unknown"
+
+            if external_result:
+                resolved = (
+                    info.get("instance_id", "") in external_result["resolved_ids"]
+                )
+                if best_stats:
+                    if resolved != best_stats.resolved:
+                        logger.warning(
+                            f"Resolved status mismatch for {info['instance_id']}: External {resolved} != Internal {best_stats.resolved}"
+                        )
+
+            elif best_stats:
+                resolved = best_stats.resolved
 
         total_usage = search_tree.total_usage()
 
         result = BenchmarkResult(
             instance_id=instance["instance_id"],
-            trajectories = [],
+            trajectories=[],
             status=status,
+            resolved=resolved,
             previous_resolved=previous_resolved,
             duration=info.get("duration", 0),
             total_cost=total_usage.completion_cost,
@@ -382,7 +434,7 @@ def to_result(
             actions=best_stats.actions if best_stats else {},
             error=best_stats.message if best_stats and best_stats.message else "",
         )
-        
+
         for leaf_node in search_tree.get_leaf_nodes():
             traj = create_trajectory_stats(
                 leaf_node,
@@ -390,6 +442,10 @@ def to_result(
                 eval_report.get("node_results", {}).get(str(leaf_node.node_id)),
             )
             result.trajectories.append(traj)
+
+            result.max_repeated_actions = max(
+                result.max_repeated_actions, traj.max_repeated_actions
+            )
 
             if traj.status == "finished":
                 result.solutions += 1
@@ -435,8 +491,13 @@ def to_result(
             result.failed_actions += traj.failed_actions
             result.expect_corrections += traj.expect_corrections
 
-        if "error" in eval_report:
-            result.error = eval_report["error"].split("\n")[0]
+            for fail_reason in traj.fail_reasons:
+                if fail_reason not in result.fail_reasons:
+                    result.fail_reasons.append(fail_reason)
+
+        if eval_report.get("error"):
+            result.error = eval_report["error"]
+            result.status = "error"
         else:
             result.error = ""
 
@@ -574,6 +635,10 @@ def to_dataframe(
             if k.endswith("_spans_details"):
                 items.append((new_key, json.dumps(v)))
 
+            # Ensure fail_reasons is properly serialized
+            if k == "fail_reasons" and isinstance(v, (list, set)):
+                items.append((new_key, list(v)))
+
         if previous_report:
             items.append(
                 (
@@ -615,8 +680,10 @@ def to_dataframe(
             "resolved_max_reward",
             "failed_max_reward",
             "failed_actions",
+            "max_repeated_actions",
             "duplicated_search_actions",
             "trajectory_path",
+            "fail_reasons",
         ]
 
         if previous_report:
@@ -650,7 +717,8 @@ def to_dataframe(
             "coding_iterations",
             "coding_edit_retries",
             "coding_plan_retries",
-            "failed_actions"
+            "failed_actions",
+            "fail_reasons",
         ]
         df = df[summary_cols]
 
@@ -672,7 +740,8 @@ def to_dataframe(
         "failed_actions",
         "alternative_solutions",
         "expected_spans_details",
-        "error"
+        "error",
+        "fail_reasons",
     ]
 
     state_columns = [
@@ -707,7 +776,7 @@ def read_results_from_json(file_path: str) -> List[BenchmarkResult]:
     return results
 
 
-def generate_report(dir: str):
+def generate_report(dir: str, split: str = "lite"):
     result_path = os.path.join(dir, "result.json")
 
     external_result = None
@@ -719,13 +788,12 @@ def generate_report(dir: str):
     logger.info(f"Search trees: {len(search_trees)}")
     if not search_trees:
         raise ValueError("No trajectories found")
-    instances = get_moatless_instances()
 
     results = []
     for search_tree in search_trees:
         instance_id = search_tree.metadata["instance_id"]
 
-        instance = instances.get(instance_id)
+        instance = get_moatless_instance(instance_id)
         if not instance:
             logger.error(f"Instance {instance_id} not found")
             continue

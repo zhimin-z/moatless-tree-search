@@ -1,14 +1,20 @@
 import logging
-from typing import List, Any, Dict
+from typing import List, Any
 
 from pydantic import Field, PrivateAttr
 
 from moatless.actions.action import Action
-from moatless.actions.model import ActionArguments, FewShotExample, Observation, RewardScaleEntry
+from moatless.actions.model import (
+    ActionArguments,
+    FewShotExample,
+    Observation,
+    RewardScaleEntry,
+)
 from moatless.file_context import FileContext
 from moatless.index.code_index import CodeIndex, is_test
 from moatless.repository.repository import Repository
 from moatless.runtime.runtime import RuntimeEnvironment, TestResult, TestStatus
+from moatless.utils.tokenizer import count_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -37,9 +43,14 @@ class RunTestsArgs(ActionArguments):
 class RunTests(Action):
     args_schema = RunTestsArgs
 
-    _code_index: CodeIndex
-    _repository: Repository
-    _runtime: RuntimeEnvironment
+    max_output_tokens: int = Field(
+        2000,
+        description="The maximum number of tokens in the test result output message",
+    )
+
+    _code_index: CodeIndex = PrivateAttr()
+    _repository: Repository = PrivateAttr()
+    _runtime: RuntimeEnvironment = PrivateAttr()
 
     def __init__(
         self,
@@ -63,11 +74,13 @@ class RunTests(Action):
             raise ValueError(
                 "File context must be provided to execute the run tests action."
             )
-        
-        test_files = [test_file for test_file 
-                      in args.test_files
-                      if file_context.get_file(test_file) is not None and is_test(test_file)]
-        
+
+        test_files = [
+            test_file
+            for test_file in args.test_files
+            if file_context.get_file(test_file) is not None and is_test(test_file)
+        ]
+
         if not test_files:
             file_paths = args.test_files
             if not file_paths:
@@ -80,22 +93,19 @@ class RunTests(Action):
 
                 for search_result in search_results:
                     test_files.append(search_result.file_path)
-                
 
         for test_file in test_files:
-           if not file_context.has_file(test_file):
+            if not file_context.has_file(test_file):
                 logger.info(f"Adding test file: {test_file} to context")
-                file_context.add_file(test_file, add_import_span=False)
+                file_context.add_file(test_file, add_extra=False)
 
         test_files = [
-            file.file_path
-            for file in file_context.files
-            if is_test(file.file_path)
+            file.file_path for file in file_context.files if is_test(file.file_path)
         ]
-        
 
         logger.info(f"Running tests: {test_files}")
-        test_results = self._runtime.run_tests(file_context, test_files)
+        patch = file_context.generate_git_patch()
+        test_results = self._runtime.run_tests(patch, test_files)
         failing_tests = [
             issue
             for issue in test_results
@@ -128,7 +138,9 @@ class RunTests(Action):
 
         return self.create_output(test_results, test_files)
 
-    def create_output(self, test_results: List[TestResult], test_files: List[str]) -> Observation:
+    def create_output(
+        self, test_results: List[TestResult], test_files: List[str]
+    ) -> Observation:
         if not test_results:
             return Observation(
                 message="No tests were run",
@@ -145,8 +157,9 @@ class RunTests(Action):
         passed_count = len(test_results) - failure_count - error_count
 
         test_result_strings = []
+        token_count = 0
 
-        for test_result in test_results:
+        for i, test_result in enumerate(test_results):
             if not test_result.message or test_result.status not in [
                 TestStatus.FAILED,
                 TestStatus.ERROR,
@@ -163,9 +176,17 @@ class RunTests(Action):
                 if test_result.line:
                     attributes += f", line: {test_result.line}"
 
-            test_result_strings.append(
-                f"* {test_result.status.value} {attributes}>\n```\n{test_result.message}\n```\n"
-            )
+            test_output = f"* {test_result.status.value} {attributes}>\n```\n{test_result.message}\n```\n"
+            test_output_tokens = count_tokens(test_output)
+            if token_count + test_output_tokens > self.max_output_tokens:
+                logger.warning(
+                    f"Test output message exceeds max token limit ({self.max_output_tokens})."
+                )
+                break
+
+            token_count += test_output_tokens
+
+            test_result_strings.append(test_output)
 
         response_msg = f"Running {len(test_results)} tests in the following files:"
         for test_file in test_files:
@@ -175,13 +196,14 @@ class RunTests(Action):
             response_msg += "\n\n"
             response_msg += "\n".join(test_result_strings)
 
-        response_msg += f"\n\n{passed_count} passed. {failure_count} failed. {error_count} errors."
+        response_msg += (
+            f"\n\n{passed_count} passed. {failure_count} failed. {error_count} errors."
+        )
 
         result_dicts = [result.model_dump() for result in test_results]
 
         return Observation(
             message=response_msg,
-            expect_correction=failure_count > 0 or error_count > 0,
             properties={"test_results": result_dicts},
         )
 
@@ -260,8 +282,8 @@ class RunTests(Action):
                     scratch_pad="We need to run the authentication tests to ensure the login flow changes haven't introduced any regressions.",
                     test_files=[
                         "tests/auth/test_authentication.py",
-                        "tests/auth/test_login.py"
-                    ]
-                )
+                        "tests/auth/test_login.py",
+                    ],
+                ),
             )
         ]

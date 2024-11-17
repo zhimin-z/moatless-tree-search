@@ -4,12 +4,10 @@ import pkgutil
 from abc import ABC
 from typing import Dict, Type, Any, Optional
 
-from instructor import OpenAISchema
-from instructor.utils import extract_json_from_codeblock, classproperty
-from openai.types.chat import ChatCompletion
+from instructor.utils import classproperty
 from pydantic import Field, BaseModel, model_validator
 
-from moatless.completion.model import ToolCall, Completion
+from moatless.completion.model import ToolCall, Completion, StructuredOutput
 
 logger = logging.getLogger(__name__)
 
@@ -17,8 +15,8 @@ logger = logging.getLogger(__name__)
 _action_args: Dict[str, Type["ActionArguments"]] = {}
 
 
-class ActionArguments(OpenAISchema, ABC):
-    scratch_pad: str = Field("", description="Your reasoning for the action.")
+class ActionArguments(StructuredOutput, ABC):
+    scratch_pad: str = Field(description="Your reasoning for the action.")
 
     class Config:
         title = "Action"
@@ -26,7 +24,7 @@ class ActionArguments(OpenAISchema, ABC):
     @classproperty
     def name(cls):
         return cls.Config.title if hasattr(cls.Config, "title") else cls.__name__
-    
+
     def to_tool_call(self) -> ToolCall:
         return ToolCall(name=self.name, input=self.model_dump())
 
@@ -46,7 +44,7 @@ class ActionArguments(OpenAISchema, ABC):
         )
         return prompt
 
-    @model_validator(mode='before')
+    @model_validator(mode="before")
     @classmethod
     def fix_scratch_pad(cls, data: Any) -> Any:
         """Allow scratch_pad to be null."""
@@ -56,7 +54,7 @@ class ActionArguments(OpenAISchema, ABC):
 
         return data
 
-    @model_validator(mode='before')
+    @model_validator(mode="before")
     @classmethod
     def fix_null_fields(cls, data: Any) -> Any:
         """Allow scratch_pad to be null."""
@@ -66,27 +64,6 @@ class ActionArguments(OpenAISchema, ABC):
                     data[key] = None
 
         return data
-
-    @classmethod
-    def parse_json(
-        cls: type[BaseModel],
-        completion: ChatCompletion,
-        validation_context: Optional[dict[str, Any]] = None,
-        strict: Optional[bool] = None,
-    ) -> BaseModel:
-        message = completion.choices[0].message.content or ""
-
-        # Because Qwen-2.5-72B-Instruct keeps adding those to the responses...
-        if '\x00' in message:
-            logger.info(f"parse_json() Replace \x00 in: {message}")
-            message = message.replace('\x00', '')
-        message = extract_json_from_codeblock(message)
-
-        return cls.model_validate_json(
-            message,
-            context=validation_context,
-            strict=strict,
-        )
 
     @classmethod
     def get_action_args(cls, action_name: str) -> Type["ActionArguments"]:
@@ -122,34 +99,18 @@ class ActionArguments(OpenAISchema, ABC):
         if isinstance(obj, dict):
             obj = obj.copy()
             action_args_class_path = obj.pop("action_args_class", None)
+            if (
+                action_args_class_path
+                == "moatless.actions.request_context.RequestMoreContextArgs"
+            ):
+                action_args_class_path = "moatless.actions.view_code.ViewCodeArgs"
+
             if action_args_class_path:
                 module_name, class_name = action_args_class_path.rsplit(".", 1)
                 module = importlib.import_module(module_name)
                 action_args_class = getattr(module, class_name)
                 return action_args_class.model_validate(obj)
         return super().model_validate(obj)
-
-
-    @classmethod
-    def parse_json(
-        cls: type[BaseModel],
-        completion: ChatCompletion,
-        validation_context: Optional[dict[str, Any]] = None,
-        strict: Optional[bool] = None,
-    ) -> BaseModel:
-        message = completion.choices[0].message.content or ""
-
-        # Because Qwen-2.5-72B-Instruct keeps adding those to the responses...
-        if "\x00" in message:
-            logger.info(f"parse_json() Replace \x00 in: {message}")
-            message = message.replace("\x00", "")
-        message = extract_json_from_codeblock(message)
-
-        return cls.model_validate_json(
-            message,
-            context=validation_context,
-            strict=strict,
-        )
 
 
 class RewardScaleEntry(BaseModel):
@@ -160,20 +121,21 @@ class RewardScaleEntry(BaseModel):
 
 class Observation(BaseModel):
     message: str = Field(
-        description="The message returned to the agent, will be displayed in chat histoy."
+        description="The message returned to the agent, will be displayed in message history."
     )
-    extra: Optional[str] = Field(
+    summary: Optional[str] = Field(
         None,
-        description="Extra information to be returned to the agent, will not be displayed in chat history.",
+        description="Summary of the observation, will be displayed in summarised message history.",
     )
     terminal: bool = Field(
         False, description="Indicates if this action results in a terminal state"
     )
     expect_correction: bool = Field(
-        False, description="Indicates that a correction is expected after this action"
+        False,
+        description="Indicates that a the action arguments was inccorect and we expect a correction",
     )
     properties: Optional[Dict[str, Any]] = Field(
-        None, description="Additional properties"
+        default_factory=dict, description="Additional properties"
     )
     execution_completion: Optional[Completion] = Field(
         None, description="Completion created when executing the action"
@@ -186,8 +148,31 @@ class Observation(BaseModel):
 
 class FewShotExample(BaseModel):
     user_input: str = Field(..., description="The user's input/question")
-    action: ActionArguments = Field(..., description="The expected response as ActionArguments")
+    action: ActionArguments = Field(
+        ..., description="The expected response as ActionArguments"
+    )
 
     @classmethod
     def create(cls, user_input: str, action: ActionArguments) -> "FewShotExample":
         return cls(user_input=user_input, action=action)
+
+
+class ActionError(ActionArguments):
+    """Error"""
+
+    error: str = Field(..., description="Error.")
+
+    class Config:
+        title = "Error"
+
+    def to_prompt(self):
+        return f"Error: {self.error}"
+
+
+class RetryException(Exception):
+    """Exception raised when an action needs to be retried with corrected arguments."""
+
+    def __init__(self, message: str, action_args: ActionArguments):
+        super().__init__(message)
+        self.message = message
+        self.action_args = action_args

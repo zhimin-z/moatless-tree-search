@@ -1,9 +1,9 @@
 import json
 import logging
 import os
-from io import BytesIO
-from typing import Optional, List, Dict
 import time
+from io import BytesIO
+from typing import Optional
 
 import matplotlib.pyplot as plt
 import networkx as nx
@@ -12,14 +12,16 @@ import streamlit as st
 from matplotlib.backends.backend_pdf import PdfPages
 from plotly.subplots import make_subplots
 
+from moatless.agent.code_agent import create_edit_code_actions
 from moatless.benchmark.report import analyse_file_context
+from moatless.benchmark.swebench import create_repository, create_index
 from moatless.benchmark.utils import get_moatless_instance
 from moatless.node import Node
+from moatless.runtime.testbed import TestbedEnvironment
 from moatless.search_tree import SearchTree
 from moatless.utils.tokenizer import count_tokens
 
 # Add this near the top of the file, after other imports
-from threading import Thread
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +64,7 @@ def build_graph(
     G = nx.DiGraph()
 
     # Add new layout logic for linear trajectory
-    is_linear = getattr(root_node, 'max_expansions', None) == 1
+    is_linear = getattr(root_node, "max_expansions", None) == 1
 
     def is_resolved(node_id):
         if not eval_result:
@@ -107,14 +109,14 @@ def build_graph(
             warning += f"\nExpected correction"
 
         resolved = is_resolved(node.node_id)
-       
+
         G.add_node(
             node_id,
             name=action_name,
             type="node",
-            visits=node.visits,
+            visits=node.visits or 1,
             duplicate=node.is_duplicate,
-            avg_reward=node.value / node.visits if node.visits > 0 else 0,
+            avg_reward=node.value / node.visits if node.visits else 0,
             reward=node.reward.value if node.reward else 0,
             warning=warning,
             error=error,
@@ -122,7 +124,7 @@ def build_graph(
             context_status=context_stats.status if context_stats else None,
             patch_status=context_stats.patch_status if context_stats else None,
             explanation=node.reward.explanation if node.reward else "",
-            is_linear=is_linear
+            is_linear=is_linear,
         )
 
         for child in node.children:
@@ -131,49 +133,106 @@ def build_graph(
             G.add_edge(node_id, child_id)
 
     add_node_to_graph(root_node)
+    G.graph["graph"] = {
+        "ranksep": "2.0",
+        "nodesep": "1.0",
+    }  # Increase spacing between ranks and nodes
     return G
 
 
 def show_completion(completion):
-    st.json(
-        {
-            "model": completion.model,
-            "usage": completion.usage.model_dump() if completion.usage else None,
-        }
-    )
-    if completion.input:
-        st.subheader("Input prompts")
-        for input_idx, input_msg in enumerate(completion.input):
-            if "content" in input_msg:
-                if isinstance(input_msg["content"], str):
-                    content = input_msg["content"]
-                elif isinstance(input_msg["content"], list) and input_msg['role'] == 'user':
-                    content_list = [c.get("content") for c in input_msg["content"]]
+    if completion:
+        st.json(
+            {
+                "model": completion.model,
+                "usage": completion.usage.model_dump() if completion.usage else None,
+            }
+        )
+        if completion.input:
+            st.subheader("Input prompts")
+            for input_idx, input_msg in enumerate(completion.input):
+                if "content" in input_msg:
+                    if isinstance(input_msg["content"], str):
+                        content = input_msg["content"]
+                    elif (
+                        isinstance(input_msg["content"], list)
+                        and input_msg["role"] == "user"
+                    ):
+                        content_list = [c.get("content") for c in input_msg["content"]]
 
-                    content = "\n\n".join(content_list)
+                        content = "\n\n".join(content_list)
+                    else:
+                        content = json.dumps(input_msg["content"], indent=2)
+
+                    tokens = count_tokens(content)
+                    with st.expander(
+                        f"Message {input_idx + 1} by {input_msg['role']} ({tokens} tokens)",
+                        expanded=(input_idx == len(completion.input) - 1),
+                    ):
+                        st.code(content, language="")
                 else:
-                    content = json.dumps(input_msg["content"], indent=2)
+                    with st.expander(
+                        f"Message {input_idx + 1} by {input_msg['role']}",
+                        expanded=(input_idx == len(completion.input) - 1),
+                    ):
+                        st.json(input_msg)
 
-                tokens = count_tokens(content)
-                with st.expander(
-                    f"Message {input_idx + 1} by {input_msg['role']} ({tokens} tokens)",
-                    expanded=(input_idx == len(completion.input) - 1),
-                ):
-                    st.code(content, language="")
-            else:
-                with st.expander(
-                    f"Message {input_idx + 1} by {input_msg['role']}",
-                    expanded=(input_idx == len(completion.input) - 1),
-                ):
-                    st.json(input_msg)
+        if completion.response:
+            st.subheader("Completion response")
+            st.json(completion.response)
 
-    if completion.response:
-        st.subheader("Completion response")
-        st.json(completion.response)
+
+def rerun_node(node_id: int, trajectory_path: str, instance: dict):
+    """Handle the rerun tab logic for a selected node."""
+    if st.button("Rerun Node"):
+        with st.spinner("Rerunning node..."):
+            try:
+                repository = create_repository(instance)
+
+                code_index = create_index(instance, repository=repository)
+
+                runtime = TestbedEnvironment(
+                    repository=repository,
+                    instance=instance,
+                )
+
+                search_tree = SearchTree.from_file(
+                    trajectory_path,
+                    repository=repository,
+                    runtime=runtime,
+                    code_index=code_index,
+                )
+                node = search_tree.get_node_by_id(node_id)
+                new_node = node.clone_and_reset()
+
+                agent = search_tree.agent
+                actions = create_edit_code_actions(
+                    repository=repository,
+                    code_index=code_index,
+                    # runtime=runtime,
+                    completion_model=agent._completion,
+                )
+                agent.set_actions(actions)
+
+                agent.run(node)
+
+                st.success("Node rerun successfully!")
+
+                st.subheader("Action")
+                st.json(new_node.action.model_dump())
+
+                st.subheader("Observation")
+                st.code(node.observation.message, language="md")
+                st.json(node.observation.properties)
+
+            except Exception as e:
+                st.error(f"Error during rerun: {str(e)}")
+                import traceback
+
+                st.code(traceback.format_exc())
 
 
 def update_visualization(container, search_tree: SearchTree, selected_tree_path: str):
-    # eval_result file
     eval_result = None
     logger.info(f"Selected tree path: {selected_tree_path}")
     directory_path = os.path.dirname(selected_tree_path)
@@ -193,7 +252,7 @@ def update_visualization(container, search_tree: SearchTree, selected_tree_path:
     if "max_node_id" not in st.session_state:
         st.session_state.max_node_id = st.session_state.total_nodes - 1
     if "selected_node_id" not in st.session_state:
-        st.session_state.selected_node_id = st.session_state.total_nodes - 1
+        st.session_state.selected_node_id = 0
     if "auto_play" not in st.session_state:
         st.session_state.auto_play = False
 
@@ -224,18 +283,22 @@ def update_visualization(container, search_tree: SearchTree, selected_tree_path:
             # Create the figure first
 
             # Calculate positions based on layout type
-            is_linear = getattr(search_tree.root, 'max_expansions', None) == 1
+            is_linear = getattr(search_tree.root, "max_expansions", None) == 1
             if is_linear:
                 # Calculate positions for linear layout with increased spacing
                 sorted_nodes = list(nx.topological_sort(G))
                 pos = {}
-                
+
                 # Increase horizontal spacing between nodes
-                spacing_factor = 2.0  # Increase this value to add more space between nodes
-                
+                spacing_factor = (
+                    2.0  # Increase this value to add more space between nodes
+                )
+
                 for i, node in enumerate(sorted_nodes):
                     # Position nodes in a zigzag pattern to prevent label overlap
-                    y_offset = 0.1 if i % 2 == 0 else -0.1  # Alternate between slightly up and down
+                    y_offset = (
+                        0.1 if i % 2 == 0 else -0.1
+                    )  # Alternate between slightly up and down
                     pos[node] = (i * spacing_factor, y_offset)
 
             else:
@@ -346,7 +409,6 @@ def update_visualization(container, search_tree: SearchTree, selected_tree_path:
 
                     if node_info.get("error"):
                         extra += f"<br>Error: {node_info['error']}"
-
 
                     # Update hover text to include badge information
                     node_text.append(
@@ -469,19 +531,64 @@ def update_visualization(container, search_tree: SearchTree, selected_tree_path:
             # Update layout settings after adding traces
             if is_linear:
                 fig.update_layout(
-                    width=max(1000, len(sorted_nodes) * 100),  # Adjust base width per node
+                    width=max(
+                        1000, len(sorted_nodes) * 100
+                    ),  # Adjust base width per node
                     height=400,  # Reduced height since we're using a linear layout
                     margin=dict(l=50, r=50, t=50, b=50),
                     autosize=False,
                     showlegend=False,
                     hovermode="closest",
-                    xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
-                    yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+                    xaxis=dict(
+                        showgrid=False,
+                        zeroline=False,
+                        showticklabels=False,
+                        rangeslider=dict(
+                            visible=False
+                        ),  # Add rangeslider for horizontal navigation
+                    ),
+                    yaxis=dict(
+                        showgrid=False,
+                        zeroline=False,
+                        showticklabels=False,
+                        scaleanchor="x",  # Lock aspect ratio
+                        scaleratio=1,
+                    ),
+                    updatemenus=[
+                        dict(
+                            type="buttons",
+                            showactive=False,
+                            buttons=[
+                                dict(
+                                    args=[{"visible": [True] * len(fig.data)}],
+                                    label="Reset View",
+                                    method="relayout",
+                                    args2=[
+                                        {
+                                            "xaxis.range": [None, None],
+                                            "yaxis.range": [None, None],
+                                        }
+                                    ],
+                                ),
+                                dict(
+                                    args=[{"yaxis.scaleanchor": None}],
+                                    label="Toggle Aspect Ratio",
+                                    method="relayout",
+                                    args2=[{"yaxis.scaleanchor": "x"}],
+                                ),
+                            ],
+                            x=0.05,
+                            y=1.1,
+                        )
+                    ],
                 )
-                
+
                 # Update node trace text positioning
                 node_trace.update(
-                    textposition=["bottom center" if i % 2 == 0 else "top center" for i in range(len(node_x))],
+                    textposition=[
+                        "bottom center" if i % 2 == 0 else "top center"
+                        for i in range(len(node_x))
+                    ],
                     textfont=dict(size=10),
                 )
             else:
@@ -494,7 +601,7 @@ def update_visualization(container, search_tree: SearchTree, selected_tree_path:
                     xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
                     yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
                     height=600
-                           * height_scale,  # Adjust the height based on the number of nodes
+                    * height_scale,  # Adjust the height based on the number of nodes
                 )
 
             col1, col2, col3, col4, col5, col6 = st.columns(6)
@@ -640,27 +747,36 @@ def update_visualization(container, search_tree: SearchTree, selected_tree_path:
                 node_id = st.session_state.selected_node_id
                 selected_node = find_node_by_id(search_tree.root, node_id)
 
-                if selected_node:
-                    tabs = ["Summary"]
+                tabs = ["Summary"]
 
+                if not selected_node or selected_node.node_id == 0:
+                    if eval_result and eval_result.get("error"):
+                        tabs.append("Error")
+
+                if selected_node:
                     if selected_node.file_context:
                         tabs.append("FileContext")
 
-                    if selected_node.action and selected_node.completions.get(
-                        "build_action"
+                    if (
+                        selected_node.action
+                        and selected_node.completions.get("build_action") is not None
                     ):
                         tabs.append("Build")
 
-                    if selected_node.action and selected_node.completions.get(
-                        "execute_action"
+                    if (
+                        selected_node.action
+                        and selected_node.completions.get("execute_action") is not None
                     ):
                         tabs.append("Execution")
 
                     if selected_node.reward:
                         tabs.append("Reward")
 
-                    if eval_result and str(selected_node.node_id) in eval_result.get(
-                        "node_results", {}
+                    if (
+                        eval_result
+                        and str(selected_node.node_id)
+                        in eval_result.get("node_results", {})
+                        is not None
                     ):
                         tabs.append("Evaluation")
 
@@ -669,32 +785,60 @@ def update_visualization(container, search_tree: SearchTree, selected_tree_path:
                     if instance:
                         tabs.append("Instance")
 
+                    if selected_node.action:
+                        tabs.append("Rerun")
+
                     tab_contents = st.tabs(tabs)
 
                     with tab_contents[tabs.index("Summary")]:
                         if selected_node.action:
-                            st.subheader(
-                                f"Node{selected_node.node_id}"
-                            )
-                            if hasattr(selected_node.action, "scratch_pad"):
+                            if selected_node.message:
+                                st.subheader(f"Message")
+                                st.write(selected_node.message)
+
+                            if (
+                                hasattr(selected_node.action, "scratch_pad")
+                                and selected_node.action.scratch_pad
+                            ):
+                                st.subheader("Thoughts")
                                 st.write(selected_node.action.scratch_pad)
 
                             st.subheader(f"Action: {selected_node.action.name}")
-                            st.json(selected_node.action.model_dump(exclude={"scratch_pad"}))
+                            st.json(
+                                selected_node.action.model_dump(exclude={"scratch_pad"})
+                            )
 
                             if selected_node.observation:
                                 st.subheader("Output")
                                 st.code(selected_node.observation.message)
-                                if selected_node.observation.extra:
-                                    st.code(selected_node.observation.extra)
 
-                                    if selected_node.message:
-                            st.write(selected_node.message)
-                            
-                            # Add reward feedback section
-                            if selected_node.feedback:
-                                st.subheader("Feedback")
-                                st.write(selected_node.feedback)
+                            if selected_node.parent:
+                                updated_context = (
+                                    selected_node.file_context.get_context_diff(
+                                        selected_node.parent.file_context
+                                    )
+                                )
+                                if not updated_context.is_empty():
+                                    st.subheader("Updated Context")
+                                    st.json(updated_context.model_dump())
+
+                            if (
+                                selected_node.action.name == "Reject"
+                                and selected_node.observation.properties
+                                and selected_node.observation.properties.get(
+                                    "last_completion"
+                                )
+                            ):
+                                st.subheader("Last completion")
+                                st.json(
+                                    selected_node.observation.properties.get(
+                                        "last_completion"
+                                    )
+                                )
+
+                    if "Error" in tabs:
+                        with tab_contents[tabs.index("Error")]:
+                            st.code(eval_result["error"])
 
                     if "FileContext" in tabs:
                         with tab_contents[tabs.index("FileContext")]:
@@ -733,6 +877,14 @@ def update_visualization(container, search_tree: SearchTree, selected_tree_path:
                     if "Instance" in tabs:
                         with tab_contents[tabs.index("Instance")]:
                             st.json(instance)
+
+                    if "Rerun" in tabs:
+                        with tab_contents[tabs.index("Rerun")]:
+                            rerun_node(
+                                selected_node.node_id,
+                                search_tree.persist_path,
+                                instance,
+                            )
 
             else:
                 st.info(
@@ -827,7 +979,7 @@ def save_tree_as_pdf(G, pos, focus_node=None, max_depth=None, orientation="lands
             for node in subgraph.nodes():
                 node_info = G.nodes[node]
                 if node_info.get("type") == "node":
-                    reward = node_info.get("value")
+                    reward = node_info.get("avg_reward")
                     if reward is not None:
                         # Map reward to a color
                         if reward < 0:
