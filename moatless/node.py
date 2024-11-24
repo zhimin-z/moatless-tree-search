@@ -7,6 +7,7 @@ from moatless.actions.view_code import ViewCodeArgs, CodeSpan
 from pydantic import BaseModel, Field
 
 from moatless.actions.model import ActionArguments, Observation
+from moatless.agent.settings import AgentSettings
 from moatless.completion.model import (
     Usage,
     Completion,
@@ -16,15 +17,11 @@ from moatless.completion.model import (
 )
 from moatless.file_context import FileContext
 from moatless.repository.repository import Repository
+from moatless.runtime.runtime import RuntimeEnvironment
 from moatless.value_function.model import Reward
 
 logger = logging.getLogger(__name__)
 
-
-class MessageHistoryType(Enum):
-    MESSAGES = "messages"  # Provides all messages in sequence
-    SUMMARY = "summary"  # Generates one message with summarized history
-    REACT = "react"
 
 
 class Node(BaseModel):
@@ -55,14 +52,17 @@ class Node(BaseModel):
         None, description="Flag to indicate if the node is a duplicate"
     )
     reward: Optional[Reward] = Field(None, description="The reward of the node")
-    visits: Optional[int] = Field(
-        None, description="The number of times the node has been visited"
+    visits: int = Field(
+        0, description="The number of times the node has been visited"
     )
     value: Optional[float] = Field(
         None, description="The total value (reward) of the node"
     )
     max_expansions: Optional[int] = Field(
         None, description="The maximum number of expansions"
+    )
+    agent_settings: Optional[AgentSettings] = Field(
+        None, description="The agent settings associated with the node"
     )
 
     @classmethod
@@ -198,314 +198,6 @@ class Node(BaseModel):
 
         return total_usage
 
-    def generate_message_history(
-        self, message_history_type: MessageHistoryType = MessageHistoryType.MESSAGES
-    ) -> list[Message]:
-        previous_nodes = self.get_trajectory()[:-1]
-        if not previous_nodes:
-            return []
-        logger.info(
-            f"Generating message history for Node{self.node_id}: {message_history_type}"
-        )
-        if message_history_type == MessageHistoryType.SUMMARY:
-            messages = self._generate_summary_history(previous_nodes)
-        elif message_history_type == MessageHistoryType.REACT:
-            messages = self.generate_react_summary(previous_nodes)
-        else:  # MessageHistoryType.MESSAGES
-            messages = self._generate_message_history(previous_nodes)
-
-        return messages
-
-    def generate_react_summary(
-        self,
-        previous_nodes: List["Node"],
-        include_file_context: bool = True,
-        include_git_patch: bool = True,
-    ) -> list[Message]:
-        """Generate a sequence of messages in ReAct format."""
-        messages = [UserMessage(content=self.get_root().message)]
-
-        if len(previous_nodes) <= 1:
-            return messages
-
-        for previous_node in previous_nodes[1:]:
-            if previous_node.action:
-                # Create assistant message with thought and action
-                thought = (
-                    f"Thought: {previous_node.action.scratch_pad}"
-                    if hasattr(previous_node.action, "scratch_pad")
-                    else ""
-                )
-                action = f"Action: {previous_node.action.name}\nAction Input: {previous_node.action.model_dump_json(exclude={'scratch_pad'})}"
-                messages.append(AssistantMessage(content=f"{thought}\n{action}"))
-
-                # Create user message with observation
-                if previous_node.observation:
-                    if (
-                        hasattr(previous_node.observation, "summary")
-                        and previous_node.observation.summary
-                    ):
-                        observation = previous_node.observation.summary
-                    else:
-                        observation = previous_node.observation.message
-                else:
-                    logger.warning(f"No output found for Node{previous_node.node_id}")
-                    observation = "No output found."
-                messages.append(UserMessage(content=f"Observation: {observation}"))
-
-        if include_file_context and not self.file_context.is_empty():
-            thought = "Thought: I need to see all the code I have viewed so far"
-            action = "Action: ShowViewedCode"
-            messages.append(AssistantMessage(content=f"{thought}\n{action}"))
-
-            observation = self.file_context.create_prompt(
-                show_span_ids=False,
-                show_line_numbers=True,
-                exclude_comments=False,
-                show_outcommented_code=True,
-                outcomment_code_comment="... rest of the code",
-            )
-            messages.append(UserMessage(content=f"Observation: {observation}"))
-
-        if include_git_patch:
-            git_patch = self.file_context.generate_git_patch()
-            if git_patch:
-                thought = "Thought: I need see the changes I done so far"
-                action = "Action: GitDiff"
-                messages.append(AssistantMessage(content=f"{thought}\n{action}"))
-
-                git_patch = self.file_context.generate_git_patch()
-                observation = f"```diff\n{git_patch}\n```"
-                messages.append(UserMessage(content=f"Observation: {observation}"))
-        return messages
-
-    def _generate_summary_history(
-        self,
-        previous_nodes: List["Node"],
-        include_file_context: bool = True,
-        include_git_patch: bool = True,
-    ) -> list[Message]:
-        """Generate a single message containing summarized history."""
-        formatted_history: List[str] = []
-        counter = 0
-
-        content = self.get_root().message
-
-        if not previous_nodes:
-            return [UserMessage(content=content)]
-
-        for i, previous_node in enumerate(previous_nodes):
-            if previous_node.action:
-                counter += 1
-                formatted_state = (
-                    f"\n## {counter}. Action: {previous_node.action.name}\n"
-                )
-                formatted_state += previous_node.action.to_prompt()
-
-                if previous_node.observation:
-                    if (
-                        hasattr(previous_node.observation, "summary")
-                        and previous_node.observation.summary
-                        and i < len(previous_nodes) - 1
-                    ):
-                        formatted_state += (
-                            f"\n\nObservation: {previous_node.observation.summary}"
-                        )
-                    else:
-                        formatted_state += (
-                            f"\n\nObservation: {previous_node.observation.message}"
-                        )
-                else:
-                    logger.warning(f"No output found for Node{previous_node.node_id}")
-                    formatted_state += "\n\nObservation: No output found."
-
-                formatted_history.append(formatted_state)
-
-        content += "\n\nBelow is the history of previously executed actions and their observations.\n"
-        content += "<history>\n"
-        content += "\n".join(formatted_history)
-        content += "\n</history>\n\n"
-
-        if include_file_context:
-            content += "\n\nThe following code has already been viewed:\n"
-            content += self.file_context.create_prompt(
-                show_span_ids=False,
-                show_line_numbers=True,
-                exclude_comments=False,
-                show_outcommented_code=True,
-                outcomment_code_comment="... rest of the code",
-            )
-
-        if include_git_patch:
-            git_patch = self.file_context.generate_git_patch()
-            if git_patch:
-                content += "\n\nThe current git diff is:\n"
-                content += "```diff\n"
-                content += git_patch
-                content += "\n```"
-
-        return [UserMessage(content=content)]
-
-    def _generate_message_history(
-        self, previous_nodes: List["Node"], show_full_file: bool = False
-    ) -> list[Message]:
-        """Generate a sequence of messages representing the full conversation history."""
-        messages: list[Message] = []
-        last_file_updates = {}
-
-        if show_full_file:
-            # Track when each file was last modified to show file contexts optimally.
-            # By showing each file's context only in the last message where it was modified,
-            # we improve prompt caching since earlier messages won't change when new files are modified.
-            for i, node in enumerate(previous_nodes):
-                if not node.parent:
-                    updated_files = set(
-                        [
-                            file.file_path
-                            for file in node.file_context.get_context_files()
-                        ]
-                    )
-                else:
-                    updated_files = node.file_context.get_updated_files(
-                        node.parent.file_context
-                    )
-                    for file in updated_files:
-                        last_file_updates[file] = i
-
-        for i, previous_node in enumerate(previous_nodes):
-            if previous_node.message:
-                messages.append(UserMessage(content=previous_node.message))
-
-            if previous_node.action:
-                tool_call = previous_node.action.to_tool_call()
-                messages.append(AssistantMessage(tool_call=tool_call))
-
-                content = ""
-                if previous_node.observation:
-                    if show_full_file and previous_node.observation.summary:
-                        content += previous_node.observation.summary
-                    else:
-                        content += previous_node.observation.message
-
-                messages.append(UserMessage(content=content))
-
-            # Show file context for files that were last updated in this message
-            if not previous_node.parent:
-                updated_files = set(
-                    [
-                        file.file_path
-                        for file in previous_node.file_context.get_context_files()
-                    ]
-                )
-            else:
-                updated_files = previous_node.file_context.get_updated_files(
-                    previous_node.parent.file_context
-                )
-
-            files_to_show = set(
-                [f for f in updated_files if last_file_updates.get(f) == i]
-            )
-
-            for file_path in files_to_show:
-                context_file = previous_node.file_context.get_context_file(file_path)
-
-                if context_file.show_all_spans:
-                    args = ViewCodeArgs(
-                        scratch_pad=f"Let's view the content in {file_path}",
-                        files=[CodeSpan(file_path=file_path)],
-                    )
-                elif context_file.span_ids:
-                    args = ViewCodeArgs(
-                        scratch_pad=f"Let's view the content in {file_path}",
-                        files=[
-                            CodeSpan(
-                                file_path=file_path, span_ids=context_file.span_ids
-                            )
-                        ],
-                    )
-                else:
-                    continue
-
-                messages.append(AssistantMessage(tool_call=args.to_tool_call()))
-                messages.append(
-                    UserMessage(
-                        content=context_file.to_prompt(
-                            show_span_ids=False,
-                            show_line_numbers=True,
-                            exclude_comments=False,
-                            show_outcommented_code=True,
-                            outcomment_code_comment="... rest of the code",
-                        )
-                    )
-                )
-
-        feedback = self._format_feedback()
-        if feedback:
-            messages.append(UserMessage(content=feedback))
-
-        return messages
-
-    def _show_updated_context(
-        self,
-        previous_node: "Node",
-        show_full_file: bool,
-        last_file_updates: Dict[str, int],
-        i: int,
-    ) -> str:
-        updated_context = None
-        content = ""
-
-        if show_full_file:
-            # Show file context for files that were last updated in this message
-            if not previous_node.parent:
-                updated_files = set(
-                    [
-                        file.file_path
-                        for file in previous_node.file_context.get_context_files()
-                    ]
-                )
-            else:
-                updated_files = previous_node.file_context.get_updated_files(
-                    previous_node.parent.file_context
-                )
-
-            files_to_show = set(
-                [f for f in updated_files if last_file_updates.get(f) == i]
-            )
-
-            if files_to_show:
-                content += f"\n\nThe file context for the following files was updated by this action:\n"
-
-        elif previous_node.parent:
-            updated_context = previous_node.file_context.get_context_diff(
-                previous_node.parent.file_context
-            )
-        else:
-            updated_context = previous_node.file_context
-
-        if updated_context and not updated_context.is_empty():
-            context_prompt = previous_node.file_context.create_prompt(
-                show_span_ids=False,
-                show_line_numbers=True,
-                exclude_comments=False,
-                show_outcommented_code=True,
-                outcomment_code_comment="... rest of the code",
-            )
-            content += f"\n\nCode added to context:\n{context_prompt}"
-
-            if not content:
-                logger.warning(
-                    f"Node{previous_node.node_id}: No content to add to messages"
-                )
-
-        return content
-
-    def _format_feedback(self) -> str:
-        """Generate formatted string for feedback."""
-        if not self.feedback:
-            return ""
-
-        return f"\n\n{self.feedback}"
 
     def equals(self, other: "Node"):
         if self.action and not other.action:
@@ -615,6 +307,7 @@ class Node(BaseModel):
         cls,
         node_data: Dict[str, Any],
         repo: Repository | None = None,
+        runtime: RuntimeEnvironment | None = None
     ) -> "Node":
         if node_data.get("action"):
             node_data["action"] = ActionArguments.model_validate(node_data["action"])
@@ -632,8 +325,11 @@ class Node(BaseModel):
 
         if node_data.get("file_context"):
             node_data["file_context"] = FileContext.from_dict(
-                repo=repo, data=node_data["file_context"]
+                repo=repo, runtime=runtime, data=node_data["file_context"]
             )
+
+        node_data["visits"] = node_data.get("visits", 0)
+        node_data["value"] = node_data.get("value", 0.0)
 
         if "children" in node_data:
             children = node_data.get("children", [])
@@ -642,7 +338,7 @@ class Node(BaseModel):
             node = super().model_validate(node_data)
 
             for child_data in children:
-                child = cls._reconstruct_node(child_data, repo=repo)
+                child = cls._reconstruct_node(child_data, repo=repo, runtime=runtime)
                 child.parent = node
                 node.children.append(child)
 
@@ -655,6 +351,7 @@ class Node(BaseModel):
         cls,
         data: Union[Dict[str, Any], List[Dict[str, Any]]],
         repo: Repository | None = None,
+        runtime: RuntimeEnvironment | None = None
     ) -> "Node":
         """
         Reconstruct a node tree from either dict (tree) or list format.
@@ -669,14 +366,15 @@ class Node(BaseModel):
         """
         # Handle list format
         if isinstance(data, list):
-            return cls._reconstruct_from_list(data, repo=repo)
+            return cls._reconstruct_from_list(data, repo=repo, runtime=runtime)
 
         # Handle single node reconstruction (dict format)
-        return cls._reconstruct_node(data, repo=repo)
+        return cls._reconstruct_node(data, repo=repo, runtime=runtime)
 
     @classmethod
     def _reconstruct_from_list(
-        cls, node_list: List[Dict], repo: Repository | None = None
+        cls, node_list: List[Dict], repo: Repository | None = None, runtime: RuntimeEnvironment | None = None
+
     ) -> "Node":
         """
         Reconstruct tree from a flat list of nodes.
@@ -690,10 +388,11 @@ class Node(BaseModel):
         """
         # Create nodes without relationships first
         nodes_by_id = {}
+
         for node_data in node_list:
             parent_id = node_data.pop("parent_id", None)
             # Use the core reconstruct method for each node
-            node = cls._reconstruct_node(node_data, repo=repo)
+            node = cls._reconstruct_node(node_data, repo=repo, runtime=runtime)
             nodes_by_id[node.node_id] = (node, parent_id)
 
         # Connect parent-child relationships
@@ -717,7 +416,7 @@ class Node(BaseModel):
 
         for node in nodes:
             node_data = node.model_dump(exclude={"parent", "children"}, **kwargs)
-            node_data["parent_id"] = node.parent.node_id if node.parent else None
+            node_data["parent_id"] = node.parent.node_id if node.parent is not None else None
             node_list.append(node_data)
 
         return node_list

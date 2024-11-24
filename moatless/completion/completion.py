@@ -42,6 +42,7 @@ class LLMResponseFormat(str, Enum):
 
 
 class CompletionModel(BaseModel):
+
     model: str = Field(..., description="The model to use for completion")
     temperature: float = Field(0.0, description="The temperature to use for completion")
     max_tokens: int = Field(
@@ -225,7 +226,7 @@ class CompletionModel(BaseModel):
         structured_output: type[StructuredOutput] | list[type[StructuredOutput]],
     ) -> Tuple[StructuredOutput, ModelResponse]:
         if not structured_output:
-            raise CompletionRuntimeError(f"Response model are required for completion")
+            raise CompletionRuntimeError(f"Response model is required for completion")
 
         if isinstance(structured_output, list) and len(structured_output) > 1:
             avalabile_actions = [
@@ -242,6 +243,9 @@ class CompletionModel(BaseModel):
 
                 @model_validator(mode="before")
                 def validate_action(cls, data: dict) -> dict:
+                    if not isinstance(data, dict):
+                        raise ValidationError("Expected dictionary input")
+                        
                     action_type = data.get("action_type")
                     if not action_type:
                         return data
@@ -262,7 +266,11 @@ class CompletionModel(BaseModel):
                         )
 
                     # Validate the action data using the specific action class
-                    data["action"] = action_class.model_validate(data["action"])
+                    action_data = data.get("action")
+                    if not action_data:
+                        raise ValidationError("Action data is required")
+                        
+                    data["action"] = action_class.model_validate(action_data)
                     return data
 
             response_model = TakeAction
@@ -286,6 +294,7 @@ Make sure to return an instance of the JSON, not the schema itself.""")
         )
 
         def _do_completion():
+            completion_response = None
             try:
                 completion_response = litellm.completion(
                     model=self.model,
@@ -296,8 +305,11 @@ Make sure to return an instance of the JSON, not the schema itself.""")
                     stop=self.stop_words,
                     messages=messages,
                     response_format={"type": "json_object"},
-                    metadata=self.metadata,
+                    metadata=self.metadata or {},
                 )
+
+                if not completion_response or not completion_response.choices:
+                    raise CompletionRuntimeError("No completion response or choices returned")
 
                 if isinstance(
                     completion_response.choices[0].message.content, BaseModel
@@ -307,6 +319,9 @@ Make sure to return an instance of the JSON, not the schema itself.""")
                     ].message.content.model_dump()
                 else:
                     assistant_message = completion_response.choices[0].message.content
+
+                if not assistant_message:
+                    raise CompletionRuntimeError("Empty response from model")
 
                 messages.append({"role": "assistant", "content": assistant_message})
 
@@ -330,13 +345,12 @@ Make sure to return an instance of the JSON, not the schema itself.""")
                     }
                 )
                 raise CompletionRejectError(
-                    message=e.message,
+                    message=str(e),
                     last_completion=completion_response,
                     messages=messages,
                 )
             except Exception as e:
-                logger.error(f"Completion attempt failed with error: {e}. Will retry.")
-
+                logger.exception(f"Completion attempt failed with error: {e}. Will retry.")
                 raise CompletionRuntimeError(
                     f"Failed to get completion response: {e}",
                 )
@@ -353,21 +367,14 @@ Make sure to return an instance of the JSON, not the schema itself.""")
         # Count occurrences of each section
         thought_count = sum(1 for line in lines if line.startswith("Thought:"))
         action_count = sum(1 for line in lines if line.startswith("Action:"))
-        action_input_count = sum(
-            1 for line in lines if line.startswith("Action Input:")
-        )
 
         # Check for multiple action blocks
-        if thought_count > 1 or action_count > 1 or action_input_count > 1:
-            raise ValueError(
-                "You can only specify one action at a time. If you need to perform multiple actions, describe your next steps in the Thought section and execute them one at a time."
-            )
+        if thought_count > 1 or action_count > 1:
+            logger.warning(f"Multiple Thought or Action sections found in response: {response_text}")
 
         # Check if all sections exist
-        if thought_count != 1 or action_count != 1 or action_input_count != 1:
-            raise ValueError(
-                "Response must have exactly one 'Thought:', 'Action:', and 'Action Input:' section"
-            )
+        if thought_count < 1 or action_count < 1:
+            raise ValueError("Response must have one 'Thought:' and 'Action:' section")
 
         # Find the starting lines for each section
         thought_line = next(
@@ -376,13 +383,10 @@ Make sure to return an instance of the JSON, not the schema itself.""")
         action_line = next(
             (i for i, line in enumerate(lines) if line.startswith("Action:")), -1
         )
-        action_input_line = next(
-            (i for i, line in enumerate(lines) if line.startswith("Action Input:")), -1
-        )
 
         # Check if sections are in correct order
-        if not (thought_line < action_line < action_input_line):
-            raise ValueError("Sections must be in order: Thought, Action, Action Input")
+        if not (thought_line < action_line):
+            raise ValueError("Sections must be in order: Thought, Action")
 
     def _litellm_react_completion(
         self,
@@ -390,60 +394,24 @@ Make sure to return an instance of the JSON, not the schema itself.""")
         system_prompt: str,
         actions: list[type[StructuredOutput]],
     ) -> Tuple[StructuredOutput, ModelResponse]:
-        action_input_schemas_str = ""
+        action_input_schemas = []
 
         for action in actions:
-            schema = action.model_json_schema()
-            if "scratch_pad" in schema["properties"]:
-                del schema["properties"]["scratch_pad"]
-
-            action_input_schemas_str += f"\n * {action.name}: {json.dumps(schema)}"
-
+            action_input_schemas.append(f" * {action.name} {action.format_schema_for_llm()}")
+            
         system_prompt += dedent(f"""\n# Response format
 
 Use the following format:
 
 Thought: You should always think about what to do
-Action: The action to take
-Action Input: The input to the action. Always use valid JSON format with double quotes for strings and 'null' for null values. For example: 'Action Input: {{"file_pattern": "path/to/file", "optional_field": null}}'
+Action: The action to take followed by the input arguments based on the schema below
 
-You have access to the following tools: {action_input_schemas_str}
+Use one of the following actions and provide input arguments matching the schema.
+                            
+{'\n\n'.join(action_input_schemas)}
 
-Important: Do not include multiple Thought-Action-Observation blocks. Do not include code blocks or additional text outside of this format.
+Important: Do not include multiple Thought-Action blocks. Do not include code blocks or additional text outside of this format.
 """)
-
-        system_prompt += """\n
-**Examples of How to Use the Response Format:**
-
-**Correct Usage:**
-
-Thought: I need to update the error message in the authentication function to be more descriptive.
-Action: StringReplace
-Action Input: {
-  "path": "auth/validator.py",
-  "old_str": "    if not user.is_active:\n        raise ValueError(\"Invalid user\")\n    return user",
-  "new_str": "    if not user.is_active:\n        raise ValueError(f\"Invalid user: {username} is not active\")\n    return user"
-}
-
-**Incorrect Usage (Multiple Actions in One Response):**
-Thought: I need to view the current implementation of the logger configuration and then update it to include a file handler.
-Action: ViewCode
-Action Input: {
-  "files": [
-    {
-      "file_path": "utils/logger.py",
-      "start_line": null,
-      "end_line": null,
-      "span_ids": ["configure_logger"]
-    }
-  ]
-}
-Action: StringReplace
-Action Input: {
-  "path": "utils/logger.py",
-  "old_str": "logging.basicConfig(level=logging.INFO, format=\"%(levelname)s - %(message)s\")",
-  "new_str": "logging.basicConfig(level=logging.INFO, format=\"%(asctime)s - %(levelname)s - %(message)s\", handlers=[logging.FileHandler(\"app.log\"), logging.StreamHandler()])"
-}"""
 
         messages.insert(0, {"role": "system", "content": system_prompt})
 
@@ -462,53 +430,65 @@ Action Input: {
 
                 thought_start = response_text.find("Thought:")
                 action_start = response_text.find("Action:")
-                action_input_start = response_text.find("Action Input:")
 
-                if (
-                    thought_start == -1
-                    or action_start == -1
-                    or action_input_start == -1
-                ):
-                    raise ValueError("Missing Thought, Action or Action Input sections")
+                if thought_start == -1 or action_start == -1:
+                    raise ValueError("Missing Thought or Action sections")
 
                 thought = response_text[thought_start + 8 : action_start].strip()
-                action = response_text[action_start + 7 : action_input_start].strip()
-                action_input = response_text[action_input_start + 13 :].strip()
+                action_input = response_text[action_start + 7:].strip()
 
-                if not action or not action_input:
-                    raise ValueError("Missing Action or Action Input values")
+                # Extract action name and input
+                action_lines = action_input.split('\n', 1)
+                if len(action_lines) < 2:
+                    raise ValueError("Missing action name and input")
+
+                action_name = action_lines[0].strip()
+                action_input = action_lines[1].strip()
 
                 # Find the matching action class
-                action_class = next((a for a in actions if a.name == action), None)
+                action_class = next((a for a in actions if a.name == action_name), None)
                 if not action_class:
                     action_names = [a.name for a in actions]
                     raise ValueError(
-                        f"Unknown action: {action}. Available actions: {', '.join(action_names)}"
+                        f"Unknown action: {action_name}. Available actions: {', '.join(action_names)}"
                     )
 
-                action_request = action_class.model_validate_json(action_input)
+                # Check if input appears to be XML format
+                if action_input.strip().startswith("<") or action_input.strip().startswith("```xml"):
+                    try:
+                        action_request = action_class.model_validate_xml(action_input)
+                    except Exception as e:
+                        format_example = action_class.format_schema_for_llm() if hasattr(action_class, 'format_schema_for_llm') else ""
+                        raise ValueError(
+                            f"Invalid XML format for {action_name}. Error: {e}\n\n"
+                            f"Expected format:\n{format_example}"
+                        )
+                else:
+                    # Otherwise, try to validate as JSON
+                    try:
+                        action_request = action_class.model_validate_json(action_input)
+                    except Exception as e:
+                        schema = action_class.model_json_schema()
+                        if "scratch_pad" in schema["properties"]:
+                            del schema["properties"]["scratch_pad"]
+                        raise ValueError(
+                            f"Invalid format for {action_name}. Error: {e}\n\n"
+                            f"Expected JSON schema:\n{json.dumps(schema, indent=2)}"
+                        )
+
                 action_request.scratch_pad = thought
                 return action_request, completion_response
 
             except Exception as e:
                 logger.warning(f"ReAct parsing failed: {e}. Response: {response_text}")
-
                 messages.append({"role": "assistant", "content": response_text})
 
-                if isinstance(e, ValidationError):
-                    messages.append(
-                        {
-                            "role": "user",
-                            "content": f"The action input JSON is invalid. Please fix the following validation errors:\n{e}",
-                        }
-                    )
-                else:
-                    messages.append(
-                        {
-                            "role": "user",
-                            "content": f"The response was invalid. Please follow the exact format:\n\nThought: your reasoning\nAction: the action name\nAction Input: the JSON input\n\nError: {e}",
-                        }
-                    )
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": f"The response was invalid. {e}",
+                    }
+                )
 
                 raise CompletionRejectError(
                     message=str(e),
@@ -521,36 +501,41 @@ Action Input: {
         except tenacity.RetryError as e:
             raise e.reraise()
 
-    def _litellm_text_completion(
-        self, messages: list[dict]
-    ) -> Tuple[str, ModelResponse]:
+    def _litellm_text_completion(self, messages: list[dict]) -> Tuple[str, ModelResponse]:
         litellm.drop_params = True
+        
+        completion_kwargs = {
+            "model": self.model,
+            "max_tokens": self.max_tokens,
+            "temperature": self.temperature,
+            "messages": messages,
+            "metadata": self.metadata or {},  # Always pass at least an empty dict
+        }
+        
+        if self.model_base_url:
+            completion_kwargs["api_base"] = self.model_base_url
+        if self.model_api_key:
+            completion_kwargs["api_key"] = self.model_api_key
+        if self.stop_words:
+            completion_kwargs["stop"] = self.stop_words
 
-        completion_response = litellm.completion(
-            model=self.model,
-            api_base=self.model_base_url,
-            api_key=self.model_api_key,
-            max_tokens=self.max_tokens,
-            temperature=self.temperature,
-            stop=self.stop_words,
-            messages=messages,
-            metadata=self.metadata,
-        )
+        completion_response = litellm.completion(**completion_kwargs)
         return completion_response.choices[0].message.content, completion_response
 
     def _litellm_tool_completion(
         self,
         messages: list[dict],
         system_prompt: str,
-        actions: list[type[StructuredOutput]],
+        response_model: type[StructuredOutput]| List[type[StructuredOutput]],
         is_retry: bool = False,
     ) -> Tuple[StructuredOutput, ModelResponse]:
         litellm.drop_params = True
         messages.insert(0, {"role": "system", "content": system_prompt})
 
-        tools = []
-        for action in actions:
-            tools.append(openai.pydantic_function_tool(action))
+        if isinstance(response_model, list):
+            tools = [r.openai_schema for r in response_model]
+        else:
+            tools = [response_model.openai_schema]
 
         completion_response = litellm.completion(
             model=self.model,
@@ -562,7 +547,7 @@ Action Input: {
             tools=tools,
             tool_choice="auto",
             messages=messages,
-            metadata=self.metadata,
+            metadata=self.metadata or {},
         )
 
         tool_args, tool_name, retry_message = None, None, None
@@ -629,12 +614,31 @@ Action Input: {
             if not retry_message:
                 retry_message = "You must response with a tool call."
             messages.append({"role": "user", "content": retry_message})
-            return self._litellm_tool_completion(messages, is_retry=True)
+            return self._litellm_tool_completion(messages, system_prompt, response_model, is_retry=True)
 
-        action_request = self.action_type().from_tool_call(
-            tool_args=tool_args, tool_name=tool_name
-        )
-        return action_request, completion_response
+        action = None
+        if isinstance(response_model, list):
+            for r in response_model:
+                if r.model_json_schema()["title"] == tool_name:
+                    action = r
+                    break
+        else:
+            action = response_model
+
+        if not action:
+            available_actions = [r.model_json_schema()["title"] for r in response_model]
+            raise ValueError(f"Unknown action {tool_name}. Available acitons: {available_actions}")
+
+        action_args = action.model_validate(tool_args)
+
+        if (
+                hasattr(action_args, "scratch_pad")
+                and completion_response.choices[0].message.content
+                and not action_args.scratch_pad
+        ):
+            action_args.scratch_pad = completion_response.choices[0].message.content
+
+        return action_args, completion_response
 
     def input_messages(
         self, content: str, completion: Completion | None, feedback: str | None = None

@@ -1,5 +1,6 @@
 import concurrent.futures
 import gc
+import hashlib
 import json
 import logging
 import os
@@ -16,7 +17,6 @@ import litellm
 from pydantic import BaseModel, Field
 from tqdm.auto import tqdm
 
-from moatless.agent.agent import ActionAgent, MessageHistoryType
 from moatless.agent.code_agent import CodingAgent
 from moatless.benchmark.report import (
     BenchmarkResult,
@@ -33,6 +33,7 @@ from moatless.completion.log_handler import LogHandler
 from moatless.discriminator import AgentDiscriminator
 from moatless.feedback.feedback_agent import FeedbackAgent
 from moatless.feedback.reward_feedback import RewardFeedbackGenerator
+from moatless.schema import MessageHistoryType
 from moatless.search_tree import SearchTree
 from moatless.selector import BestFirstSelector, SoftmaxSelector, Selector
 from moatless.value_function.coding import CodingValueFunction
@@ -136,11 +137,6 @@ class TreeSearchSettings(BaseModel):
         description="The settings for the debate.",
     )
 
-    use_edit_actions: bool = Field(
-        False,
-        description="Whether to use edit actions instead of RequestCodeChange.",
-    )
-
     feedback_type: Optional[str] = Field(
         None,
         description="Type of feedback generator to use ('reward', 'agent', or None).",
@@ -200,7 +196,6 @@ class Evaluation:
         litellm_callback: Optional[str] = None,
         num_workers: int = 1,
         use_testbed: bool = False,
-        agent: ActionAgent | None = None,
         selector: Selector | None = None,
     ):
         self.evaluations_dir = evaluations_dir
@@ -214,7 +209,6 @@ class Evaluation:
         self.settings = settings
         self.max_file_context_tokens = max_file_context_tokens
 
-        self.agent = agent
         self.selector = selector
 
         self.evaluation_dir = f"{evaluations_dir}/{evaluation_name}"
@@ -439,11 +433,14 @@ class Evaluation:
                 if self.use_testbed:
                     from moatless.runtime.testbed import TestbedEnvironment
 
+                    run_id = hashlib.sha256(self.evaluation_name.encode()).hexdigest()[:8]
+
                     runtime = TestbedEnvironment(
                         repository=repository,
                         instance=instance,
                         log_dir=log_dir,
                         dataset_name=self.dataset_name,
+                        run_id=run_id,
                     )
                 else:
                     runtime = None
@@ -465,7 +462,6 @@ class Evaluation:
                         repository=repository,
                         code_index=code_index,
                         runtime=runtime,
-                        use_edit_actions=self.settings.use_edit_actions,
                         message_history_type=self.settings.agent_message_history_type,
                     )
 
@@ -512,6 +508,7 @@ class Evaluation:
                     search_tree = SearchTree.create(
                         message=problem_statement,
                         repository=repository,
+                        runtime=runtime,
                         agent=agent,
                         selector=selector,
                         value_function=value_function,

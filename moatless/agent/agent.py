@@ -11,12 +11,14 @@ from moatless.actions.model import (
     RetryException,
     ActionError,
 )
+from moatless.agent.settings import AgentSettings
 from moatless.completion.completion import CompletionModel
 from moatless.completion.model import AssistantMessage, UserMessage, Completion
 from moatless.exceptions import RuntimeError, CompletionRejectError
 from moatless.index.code_index import CodeIndex
-from moatless.node import Node, MessageHistoryType
+from moatless.node import Node
 from moatless.repository.repository import Repository
+from moatless.message_history import MessageHistoryGenerator
 
 logger = logging.getLogger(__name__)
 
@@ -26,21 +28,9 @@ class ActionAgent(BaseModel):
         None, description="System prompt to be used for generating completions"
     )
     actions: List[Action] = Field(default_factory=list)
-    message_history_type: MessageHistoryType = Field(
-        default=MessageHistoryType.MESSAGES,
-        description="Determines how message history is generated",
-    )
-    include_extra_history: bool = Field(
-        default=True,
-        description="Whether to include extra execution details in message history",
-    )
-    include_file_context: bool = Field(
-        default=False,
-        description="Whether to include the full file context in the last message",
-    )
-    include_git_patch: bool = Field(
-        default=False,
-        description="Whether to include the full git patch in the last message",
+    message_generator: MessageHistoryGenerator = Field(
+        default_factory=lambda: MessageHistoryGenerator(),
+        description="Generator for message history"
     )
 
     _completion: CompletionModel = PrivateAttr()
@@ -51,12 +41,30 @@ class ActionAgent(BaseModel):
         completion: CompletionModel,
         system_prompt: str | None = None,
         actions: List[Action] | None = None,
+        message_generator: MessageHistoryGenerator | None = None,
         **data,
     ):
         actions = actions or []
-        super().__init__(actions=actions, system_prompt=system_prompt, **data)
+        message_generator = message_generator or MessageHistoryGenerator()
+        super().__init__(
+            actions=actions, 
+            system_prompt=system_prompt,
+            message_generator=message_generator,
+            **data
+        )
         self.set_actions(actions)
         self._completion = completion
+
+    @classmethod
+    def from_agent_settings(cls, agent_settings: AgentSettings, actions: List[Action] | None = None):
+        if agent_settings.actions:
+            actions = [action for action in actions if action.__class__.__name__ in agent_settings.actions]
+
+        return cls(
+            completion=agent_settings.completion_model,
+            system_prompt=agent_settings.system_prompt,
+            actions=actions,
+        )
 
     def set_actions(self, actions: List[Action]):
         self.actions = actions
@@ -88,8 +96,6 @@ class ActionAgent(BaseModel):
             logger.info(f"Node{node.node_id}: Resetting node")
             node.reset()
 
-        logger.info(node.file_context.model_dump())
-
         possible_actions = self.determine_possible_actions(node)
         if not possible_actions:
             raise RuntimeError(f"No possible actions for Node{node.node_id}")
@@ -97,9 +103,7 @@ class ActionAgent(BaseModel):
         system_prompt = self.generate_system_prompt(possible_actions)
         action_args = [action.args_schema for action in possible_actions]
 
-        messages = node.generate_message_history(
-            message_history_type=self.message_history_type
-        )
+        messages = self.message_generator.generate(node)
 
         max_attempts = 3
         for attempt in range(max_attempts):
@@ -126,9 +130,10 @@ class ActionAgent(BaseModel):
 
                 node.observation = Observation(
                     message=e.message,
-                    is_terminal=True,
+                    terminal=True,
                     properties={"error": str(e), "retries": attempt},
                 )
+
                 return
 
             duplicate_node = node.find_duplicate()
@@ -210,13 +215,8 @@ class ActionAgent(BaseModel):
         dump["completion"] = self._completion.model_dump(**kwargs)
         dump["actions"] = []
         dump["agent_class"] = f"{self.__class__.__module__}.{self.__class__.__name__}"
-        dump["message_history_type"] = self.message_history_type.value
         for action in self.actions:
-            action_dump = action.model_dump(**kwargs)
-            action_dump["action_class"] = (
-                f"{action.__class__.__module__}.{action.__class__.__name__}"
-            )
-            dump["actions"].append(action_dump)
+            dump["actions"].append(action.model_dump(**kwargs))
         return dump
 
     @classmethod
@@ -232,10 +232,9 @@ class ActionAgent(BaseModel):
             completion_data = obj.pop("completion", None)
             agent_class_path = obj.pop("agent_class", None)
 
-            if "message_history_type" in obj:
-                obj["message_history_type"] = MessageHistoryType(
-                    obj["message_history_type"]
-                )
+            message_generator_data = obj.get("message_generator", {})
+            if message_generator_data:
+                obj["message_generator"] = MessageHistoryGenerator.model_validate(message_generator_data)
 
             if completion_data:
                 obj["completion"] = CompletionModel.model_validate(completion_data)
@@ -244,7 +243,7 @@ class ActionAgent(BaseModel):
 
             if repository:
                 obj["actions"] = [
-                    Action.from_dict(
+                    Action.model_validate(
                         action_data,
                         repository=repository,
                         runtime=runtime,

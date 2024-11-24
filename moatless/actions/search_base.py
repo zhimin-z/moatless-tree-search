@@ -2,12 +2,12 @@ import logging
 from abc import ABC
 from typing import List, Optional, Type, Any, ClassVar, Tuple
 
-from pydantic import Field, PrivateAttr, BaseModel
+from pydantic import Field, PrivateAttr, BaseModel, field_validator, model_validator
 
 from moatless.actions.action import Action
 from moatless.actions.model import ActionArguments, Observation, RewardScaleEntry
 from moatless.completion import CompletionModel
-from moatless.completion.model import UserMessage, AssistantMessage, Completion
+from moatless.completion.model import UserMessage, AssistantMessage, Completion, StructuredOutput
 from moatless.exceptions import CompletionRejectError
 from moatless.file_context import FileContext
 from moatless.index import CodeIndex
@@ -46,6 +46,14 @@ class SearchBaseArgs(ActionArguments, ABC):
         description="A glob pattern to filter search results to specific files or directories.",
     )
 
+    @field_validator("file_pattern")
+    @classmethod
+    def validate_file_pattern(cls, v):
+        if v:
+            if "," in v:
+                raise ValueError("File pattern cannot contain commas")
+        return v
+
 
 class IdentifiedSpans(BaseModel):
     file_path: str = Field(
@@ -59,7 +67,7 @@ class IdentifiedSpans(BaseModel):
     )
 
 
-class Identify(ActionArguments):
+class Identify(StructuredOutput):
     """Identify if the provided search result is relevant to the reported issue."""
 
     scratch_pad: str = Field(
@@ -84,6 +92,10 @@ class SearchBaseAction(Action):
         8000,
         description="The maximum number of tokens allowed in the identified code sections.",
     )
+    max_identify_prompt_tokens: int = Field(
+        16000,
+        description="The maximum number of tokens allowed in the identify prompt.",
+    )
     max_hits: int = Field(
         10,
         description="The maximum number of search hits to display.",
@@ -98,7 +110,7 @@ class SearchBaseAction(Action):
 
     def __init__(
         self,
-        repository: Repository | None = None,
+        repository: Repository = None,
         code_index: CodeIndex | None = None,
         completion_model: CompletionModel | None = None,
         **data,
@@ -106,6 +118,7 @@ class SearchBaseAction(Action):
         super().__init__(completion_model=completion_model, **data)
         self._repository = repository
         self._code_index = code_index
+
 
     def execute(
         self, args: SearchBaseArgs, file_context: FileContext | None = None
@@ -124,6 +137,7 @@ class SearchBaseAction(Action):
             return Observation(message="No search results found", properties=properties)
 
         properties["search_tokens"] = search_result_context.context_size()
+        properties["search_hits"] = search_result_context.model_dump(exclude_none=True)
 
         completion = None
         if (
@@ -140,6 +154,12 @@ class SearchBaseAction(Action):
         span_count = search_result_context.span_count()
         search_result_str = f"Found {span_count} code sections."
 
+        # Apply previous changes to view context
+        # TODO: Refactor
+        for file in file_context.files:
+            if view_context.has_file(file.file_path) and file.patch:
+                view_context.get_file(file.file_path).set_patch(file.patch)
+
         if view_context.is_empty():
             search_result_str += (
                 "\n\nNone of the search results was relevant to the task."
@@ -147,18 +167,14 @@ class SearchBaseAction(Action):
             summary = "Didn't find any relevant code sections in the search results."
             message = search_result_str
         else:
-            summary = "Found relevant code sections in the search results."
-            search_result_str += "\n\nViewed relevant code:"
-            message = (
-                search_result_str
-                + "\n"
-                + view_context.create_prompt(
+            summary = "Found the following relevant code spans:\n" + view_context.create_summary()
+            message = "Found the following relevant code:\n"
+            message += view_context.create_prompt(
                     show_span_ids=False,
                     show_line_numbers=True,
                     exclude_comments=False,
                     show_outcommented_code=True,
                 )
-            )
 
         new_span_ids = file_context.add_file_context(view_context)
         properties["new_span_ids"] = new_span_ids
@@ -237,6 +253,7 @@ class SearchBaseAction(Action):
             exclude_comments=False,
             show_outcommented_code=True,
             outcomment_code_comment="...",
+            max_tokens=self.max_identify_prompt_tokens,
         )
 
         content = "Search request:"

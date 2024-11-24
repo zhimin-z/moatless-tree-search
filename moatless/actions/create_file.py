@@ -34,6 +34,19 @@ class CreateFileArgs(ActionArguments):
     class Config:
         title = "CreateFile"
 
+    def format_args_for_llm(self) -> str:
+        return f"""<path>{self.path}</path>
+<file_text>
+{self.file_text}
+</file_text>"""
+
+    @classmethod
+    def format_schema_for_llm(cls) -> str:
+        return cls.format_xml_schema({
+            "path": "file/path.py",
+            "file_text": "\ncomplete file content\n"
+        })
+
 
 class CreateFile(Action, CodeActionValueMixin, CodeModificationMixin):
     """
@@ -79,26 +92,13 @@ class CreateFile(Action, CodeActionValueMixin, CodeModificationMixin):
             properties={"diff": diff, "success": True},
         )
 
-        if not self._runtime:
-            return observation
-
-        run_tests = RunTests(
-            repository=self._repository,
-            runtime=self._runtime,
-            code_index=self._code_index,
+        self.run_tests(
+            file_path=str(path),
+            file_context=file_context,
         )
-        test_observation = run_tests.execute(
-            RunTestsArgs(
-                scratch_pad=args.scratch_pad,
-                test_files=[args.path],
-            ),
-            file_context,
-        )
-
-        observation.properties.update(test_observation.properties)
-        observation.message += "\n\n" + test_observation.message
 
         return observation
+
 
     @classmethod
     def get_few_shot_examples(cls) -> List[FewShotExample]:
@@ -133,30 +133,5 @@ class UserAuth:
         logger.info(f"User {username} registered successfully")
         return True""",
                 ),
-            ),
-            FewShotExample.create(
-                user_input="Create a new configuration file",
-                action=CreateFileArgs(
-                    scratch_pad="Creating a configuration file with basic settings",
-                    path="config/settings.py",
-                    file_text="""from pathlib import Path
-
-BASE_DIR = Path(__file__).resolve().parent.parent
-
-DEBUG = True
-
-DATABASE = {
-    'host': 'localhost',
-    'port': 5432,
-    'name': 'myapp_db',
-    'user': 'admin'
-}
-
-LOGGING = {
-    'version': 1,
-    'disable_existing_loggers': False,
-    'level': 'INFO'
-}""",
-                ),
-            ),
+            )
         ]

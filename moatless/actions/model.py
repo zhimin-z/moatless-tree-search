@@ -5,9 +5,11 @@ from abc import ABC
 from typing import Dict, Type, Any, Optional
 
 from instructor.utils import classproperty
-from pydantic import Field, BaseModel, model_validator
+from pydantic import Field, BaseModel, model_validator, ValidationError
+import xml.etree.ElementTree as ET
 
 from moatless.completion.model import ToolCall, Completion, StructuredOutput
+from moatless.file_context import FileContext
 
 logger = logging.getLogger(__name__)
 

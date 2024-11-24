@@ -43,6 +43,13 @@ class InsertLineArgs(ActionArguments):
     class Config:
         title = "InsertLines"
 
+    def format_args_for_llm(self) -> str:
+        return f"""<path>{self.path}</path>
+<insert_line>{self.insert_line}</insert_line>
+<new_str>
+{self.new_str}
+</new_str>"""
+
 
 class InsertLine(Action, CodeActionValueMixin, CodeModificationMixin):
     """
@@ -83,6 +90,13 @@ class InsertLine(Action, CodeActionValueMixin, CodeModificationMixin):
             return Observation(
                 message=f"Could not get context for file: {path}",
                 properties={"fail_reason": "context_error"},
+            )
+
+        if not context_file.lines_is_in_context(args.insert_line - 1, args.insert_line):
+            return Observation(
+                message=f"Line {args.insert_line} is not in the visible portion of file {path}. Please provide a line number within the visible code, use ViewCode to see the code.",
+                properties={"fail_reason": "lines_not_in_context"},
+                expect_correction=True,
             )
 
         file_text = context_file.content.expandtabs()
