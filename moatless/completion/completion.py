@@ -29,7 +29,7 @@ from openai import AzureOpenAI, OpenAI, LengthFinishReasonError
 from pydantic import BaseModel, Field, model_validator, ValidationError
 
 from moatless.completion.model import Message, Completion, StructuredOutput
-from moatless.exceptions import CompletionRejectError, CompletionRuntimeError
+from moatless.exceptions import CompletionRejectError, CompletionRuntimeError, CompletionError
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +52,9 @@ class CompletionModel(BaseModel):
         default=None, description="The base URL for the model API"
     )
     model_api_key: Optional[str] = Field(
-        default=None, description="The API key for the model"
+        default=None, 
+        description="The API key for the model",
+        exclude=True
     )
     response_format: LLMResponseFormat = Field(
         LLMResponseFormat.TOOLS, description="The response format expected from the LLM"
@@ -151,7 +153,7 @@ class CompletionModel(BaseModel):
                 action_args, completion_response = self._litellm_completion(
                     completion_messages, system_prompt, response_model
                 )
-        except CompletionRejectError as e:
+        except CompletionError as e:
             raise e
         except Exception as e:
             if isinstance(e, APIError):
@@ -469,14 +471,14 @@ Important: Do not include multiple Thought-Action blocks. Do not include code bl
                         action_request = action_class.model_validate_json(action_input)
                     except Exception as e:
                         schema = action_class.model_json_schema()
-                        if "scratch_pad" in schema["properties"]:
-                            del schema["properties"]["scratch_pad"]
+                        if "thoughts" in schema["properties"]:
+                            del schema["properties"]["thoughts"]
                         raise ValueError(
                             f"Invalid format for {action_name}. Error: {e}\n\n"
                             f"Expected JSON schema:\n{json.dumps(schema, indent=2)}"
                         )
 
-                action_request.scratch_pad = thought
+                action_request.thoughts = thought
                 return action_request, completion_response
 
             except Exception as e:
@@ -533,9 +535,9 @@ Important: Do not include multiple Thought-Action blocks. Do not include code bl
         messages.insert(0, {"role": "system", "content": system_prompt})
 
         if isinstance(response_model, list):
-            tools = [r.openai_schema for r in response_model]
+            tools = [r.openai_schema(thoughts_in_action=True) for r in response_model]
         else:
-            tools = [response_model.openai_schema]
+            tools = [response_model.openai_schema()]
 
         completion_response = litellm.completion(
             model=self.model,
@@ -545,7 +547,7 @@ Important: Do not include multiple Thought-Action blocks. Do not include code bl
             api_key=self.model_api_key,
             stop=self.stop_words,
             tools=tools,
-            tool_choice="auto",
+            tool_choice="required",
             messages=messages,
             metadata=self.metadata or {},
         )
@@ -632,11 +634,11 @@ Important: Do not include multiple Thought-Action blocks. Do not include code bl
         action_args = action.model_validate(tool_args)
 
         if (
-                hasattr(action_args, "scratch_pad")
+                hasattr(action_args, "thoughts")
                 and completion_response.choices[0].message.content
-                and not action_args.scratch_pad
+                and not action_args.thoughts
         ):
-            action_args.scratch_pad = completion_response.choices[0].message.content
+            action_args.thoughts = completion_response.choices[0].message.content
 
         return action_args, completion_response
 
@@ -706,7 +708,7 @@ Important: Do not include multiple Thought-Action blocks. Do not include code bl
         tools = []
         if actions:
             for action in actions:
-                schema = action.openai_schema
+                schema = action.openai_schema()
                 tools.append(
                     openai.pydantic_function_tool(
                         action, name=schema["name"], description=schema["description"]
@@ -802,11 +804,11 @@ Important: Do not include multiple Thought-Action blocks. Do not include code bl
                         {"name": "str_replace_editor", "type": "text_editor_20241022"}
                     )
                 else:
-                    schema = action.anthropic_schema
+                    schema = action.anthropic_schema()
 
                     # Remove scratch pad field, use regular text block for thoughts
-                    if "scratch_pad" in schema["input_schema"]["properties"]:
-                        del schema["input_schema"]["properties"]["scratch_pad"]
+                    if "thoughts" in schema["input_schema"]["properties"]:
+                        del schema["input_schema"]["properties"]["thoughts"]
 
                     tools.append(schema)
 
@@ -814,12 +816,14 @@ Important: Do not include multiple Thought-Action blocks. Do not include code bl
 
         if "anthropic" in self.model:
             anthropic_client = AnthropicBedrock()
-            betas = ["computer-use-2024-10-22"]
+            extra_headers = { } #"X-Amzn-Bedrock-explicitPromptCaching": "enabled"}
         else:
             anthropic_client = Anthropic()
-            betas = ["computer-use-2024-10-22", "prompt-caching-2024-07-31"]
-            _inject_prompt_caching(messages)
-            system_message["cache_control"] = {"type": "ephemeral"}
+            extra_headers = {}
+
+        betas = ["computer-use-2024-10-22", "prompt-caching-2024-07-31"]
+        _inject_prompt_caching(messages)
+        system_message["cache_control"] = {"type": "ephemeral"}
 
         completion_response = None
         retry_message = None
@@ -839,9 +843,10 @@ Important: Do not include multiple Thought-Action blocks. Do not include code bl
                     tools=tools,
                     messages=messages,
                     betas=betas,
+                    extra_headers=extra_headers
                 )
             except anthropic.BadRequestError as e:
-                logger.error(
+                logger.exception(
                     f"Failed to create completion: {e}. Input messages: {json.dumps(messages, indent=2)}"
                 )
                 last_completion = (
@@ -870,7 +875,7 @@ Important: Do not include multiple Thought-Action blocks. Do not include code bl
                             action = actions[0]
                         else:
                             for check_action in actions:
-                                if check_action.openai_schema["name"] == block.name:
+                                if check_action.name == block.name:
                                     action = check_action
                                     break
 
@@ -880,11 +885,11 @@ Important: Do not include multiple Thought-Action blocks. Do not include code bl
                         action_args = action.model_validate(block.input)
 
                         if (
-                            hasattr(action_args, "scratch_pad")
+                            hasattr(action_args, "thoughts")
                             and text
-                            and not action_args.scratch_pad
+                            and not action_args.thoughts
                         ):
-                            action_args.scratch_pad = text
+                            action_args.thoughts = text
 
                         # TODO: We only support one action at the moment
                         return action_args, completion_response
@@ -900,6 +905,7 @@ Important: Do not include multiple Thought-Action blocks. Do not include code bl
                     else:
                         logger.warning(f"Unexpected block {block}]")
 
+                logger.warning(f"No tool call found in completion response. Response text: {text}")
                 retry_message = f"You're an autonomous agent that can't communicate with the user. Please provide a tool call."
             except anthropic.APIError as e:
                 if hasattr(e, "status_code"):
@@ -910,8 +916,15 @@ Important: Do not include multiple Thought-Action blocks. Do not include code bl
                     raise CompletionRuntimeError(
                         f"Failed to call Anthropic API. {e}"
                     ) from e
-            except Exception as e:
+            except ValidationError as e:
+                logger.exception("Failed")
                 retry_message = f"The request was invalid. Please try again. Error: {e}"
+            except Exception as e:
+                raise CompletionRuntimeError(
+                    f"Failed to get completion response: {e}",
+                    messages=messages,
+                    last_completion=completion_response,
+                ) from e
 
             response_content = [
                 block.model_dump() for block in completion_response.content
@@ -943,14 +956,14 @@ Important: Do not include multiple Thought-Action blocks. Do not include code bl
                         tool_input = message.tool_call.input.copy()
 
                         # Scratch pad is provided as a message instead of part of the tool call
-                        if "scratch_pad" in message.tool_call.input:
-                            scratch_pad = tool_input["scratch_pad"]
-                            del tool_input["scratch_pad"]
-                            if scratch_pad:
+                        if "thoughts" in message.tool_call.input:
+                            thoughts = tool_input["thoughts"]
+                            del tool_input["thoughts"]
+                            if thoughts:
                                 content.append(
                                     {
                                         "type": "text",
-                                        "text": f"<thoughts>\n{scratch_pad}\n</thoughts>",
+                                        "text": f"<thoughts>\n{thoughts}\n</thoughts>",
                                     }
                                 )
 

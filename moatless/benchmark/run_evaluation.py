@@ -9,8 +9,11 @@ from moatless.benchmark.evaluation import (
     create_evaluation_name,
     Evaluation,
     TreeSearchSettings,
-    ModelSettings,
+    BestFirstSelector
 )
+from moatless.completion.completion import CompletionModel
+from moatless.completion.completion import LLMResponseFormat
+from moatless.schema import MessageHistoryType
 
 logger = logging.getLogger(__name__)
 
@@ -27,9 +30,19 @@ def evaluate_search_and_code(
     min_resolved: Optional[int] = None,
     max_resolved: Optional[int] = None,
     repos: Optional[list[str]] = None,
+    split: str = "lite",
+    high_value_threshold: float = 50.0,
+    high_value_leaf_bonus_constant: float = 50.0,
+    use_average_reward: bool = False,
     **kwargs,
 ):
-    temperature = tree_search_settings.model.temperature or kwargs.get("temp_bias", 0.2)
+    selector = BestFirstSelector(
+        high_value_threshold=high_value_threshold,
+        high_value_leaf_bonus_constant=high_value_leaf_bonus_constant,
+        use_average_reward=use_average_reward
+    )
+
+    temperature = tree_search_settings.model.temperature
 
     if evaluation_name is None:
         evaluation_name = create_evaluation_name(
@@ -44,14 +57,14 @@ def evaluate_search_and_code(
 
     # Expect models with prefix openai/ to be custom
     if tree_search_settings.model.model.startswith("openai/"):
-        tree_search_settings.model.base_url = os.getenv("CUSTOM_LLM_API_BASE")
-        tree_search_settings.model.api_key = os.getenv("CUSTOM_LLM_API_KEY")
+        tree_search_settings.model.model_base_url = os.getenv("CUSTOM_LLM_API_BASE")
+        tree_search_settings.model.model_api_key = os.getenv("CUSTOM_LLM_API_KEY")
 
     logger.info("Evaluation Parameters:")
     logger.info(f"Evalation dir: {evaluations_dir}")
     logger.info(f"Evaluation Name: {evaluation_name}")
     logger.info(f"Model: {tree_search_settings.model.model}")
-    logger.info(f"Model Base URL: {tree_search_settings.model.base_url}")
+    logger.info(f"Model Base URL: {tree_search_settings.model.model_base_url}")
     logger.info(f"Temperature: {temperature}")
     logger.info(f"Tree Search Settings:")
     logger.info(f"  Max Expansions: {tree_search_settings.max_expansions}")
@@ -74,6 +87,7 @@ def evaluate_search_and_code(
 
     evaluation = Evaluation(
         settings=tree_search_settings,
+        selector=selector,
         evaluations_dir=evaluations_dir,
         evaluation_name=evaluation_name,
         repo_base_dir=repo_base_dir,
@@ -87,6 +101,7 @@ def evaluate_search_and_code(
         repos=repos,
         min_resolved=min_resolved,
         max_resolved=max_resolved,
+        split=split,
     )
 
     return os.path.join(evaluations_dir, evaluation_name)
@@ -131,13 +146,20 @@ def main():
     model_group.add_argument(
         "--temp", type=float, default=0.2, help="Temperature for model sampling"
     )
+    model_group.add_argument(
+        "--format",
+        type=str,
+        choices=["tools", "json", "react"],
+        default="tools",
+        help="Response format for the model"
+    )
 
     # Search settings
     search_group = parser.add_argument_group("search settings")
     search_group.add_argument(
         "--max_expansions",
         type=int,
-        default=3,
+        default=30,
         help="Maximum number of expansions per node",
     )
     search_group.add_argument(
@@ -153,7 +175,7 @@ def main():
         help="Maximum number of finished nodes before stopping",
     )
     search_group.add_argument(
-        "--max_iterations", type=int, default=50, help="Maximum number of iterations"
+        "--max_iterations", type=int, default=100, help="Maximum number of iterations"
     )
     search_group.add_argument(
         "--max_cost",
@@ -164,7 +186,7 @@ def main():
     search_group.add_argument(
         "--reward_threshold",
         type=int,
-        default=None,
+        default=90,
         help="Minimum reward threshold to consider before finishing",
     )
     search_group.add_argument(
@@ -221,12 +243,6 @@ def main():
         help="Filter instances by repository names",
     )
     instance_group.add_argument(
-        "--resolved_by",
-        type=int,
-        default=None,
-        help="Filter instances by resolved solutions (e.g., 1, 2, 3, ...)",
-    )
-    instance_group.add_argument(
         "--min_resolved",
         type=int,
         default=None,
@@ -238,6 +254,13 @@ def main():
         default=None,
         help="Filter instances by maximum number of resolved solutions",
     )
+    instance_group.add_argument(
+        "--split",
+        type=str,
+        choices=["lite", "combo"],
+        default="lite",
+        help="Dataset split to use (lite or combo)",
+    )
 
     # Other settings
     other_group = parser.add_argument_group("other settings")
@@ -246,6 +269,25 @@ def main():
     )
     other_group.add_argument(
         "--date", type=str, default=None, help="Custom date for the evaluation name"
+    )
+
+    selector_group = parser.add_argument_group("selector settings")
+    selector_group.add_argument(
+        "--high_value_threshold",
+        type=float,
+        default=50.0,
+        help="Threshold for considering a node's reward as high value"
+    )
+    selector_group.add_argument(
+        "--high_value_leaf_bonus_constant",
+        type=float,
+        default=50.0,
+        help="Bonus constant for high-value leaf nodes"
+    )
+    selector_group.add_argument(
+        "--use_average_reward",
+        action="store_true",
+        help="Use average reward across trajectory instead of node reward"
     )
 
     args = parser.parse_args()
@@ -341,9 +383,23 @@ def main():
     logging.getLogger("moatless.benchmark.run_evaluation").setLevel(logging.INFO)
     # logging.getLogger("mcts_tree").setLevel(logging.INFO)
 
-    # Create ModelSettings instance
-    model_settings = ModelSettings(
-        model=args.model, temperature=args.temp, max_tokens=3000
+    def get_response_format(format_str: str) -> LLMResponseFormat:
+        format_map = {
+            "tools": LLMResponseFormat.TOOLS,
+            "json": LLMResponseFormat.JSON,
+            "react": LLMResponseFormat.REACT
+        }
+        return format_map[format_str]
+
+    def get_message_history_type(format_str: str) -> MessageHistoryType:
+        # Only use REACT for react format, use MESSAGES for all others
+        return MessageHistoryType.REACT if format_str == "react" else MessageHistoryType.MESSAGES
+
+    model_settings = CompletionModel(
+        model=args.model, 
+        temperature=args.temp, 
+        max_tokens=3000,
+        response_format=get_response_format(args.format)
     )
 
     tree_search_settings = TreeSearchSettings(
@@ -358,6 +414,7 @@ def main():
         debate=args.debate,
         best_first=True,
         model=model_settings,
+        agent_message_history_type=get_message_history_type(args.format)
     )
 
     evaluate_search_and_code(
@@ -373,6 +430,10 @@ def main():
         best_first=not args.sample_first,
         min_resolved=args.min_resolved,
         max_resolved=args.max_resolved,
+        split=args.split,
+        high_value_threshold=args.high_value_threshold,
+        high_value_leaf_bonus_constant=args.high_value_leaf_bonus_constant,
+        use_average_reward=args.use_average_reward,
     )
 
 

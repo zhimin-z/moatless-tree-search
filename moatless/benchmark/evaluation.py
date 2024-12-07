@@ -267,15 +267,32 @@ class Evaluation:
         min_resolved: Optional[int] = None,
         max_resolved: Optional[int] = None,
     ):
-        file_path = os.path.join(
-            os.path.dirname(__file__), f"swebench_{split}_all_evaluations.json"
-        )
-        with open(file_path) as f:
-            instances = json.load(f)
+        if split == "combo":
+            # Load both lite and verified datasets
+            lite_path = os.path.join(os.path.dirname(__file__), "swebench_lite_all_evaluations.json")
+            verified_path = os.path.join(os.path.dirname(__file__), "swebench_verified_all_evaluations.json")
+            
+            with open(lite_path) as f:
+                lite_instances = json.load(f)
+            with open(verified_path) as f:
+                verified_instances = json.load(f)
+                
+            # Get instance IDs that exist in both datasets
+            lite_ids = {instance["instance_id"] for instance in lite_instances}
+            verified_ids = {instance["instance_id"] for instance in verified_instances}
+            common_ids = lite_ids.intersection(verified_ids)
+            
+            # Use instances from lite dataset that exist in both
+            instances = [instance for instance in lite_instances if instance["instance_id"] in common_ids]
+            logger.info(f"Found {len(instances)} instances that exist in both lite and verified datasets")
+        else:
+            file_path = os.path.join(os.path.dirname(__file__), f"swebench_{split}_all_evaluations.json")
+            with open(file_path) as f:
+                instances = json.load(f)
+            logger.info(f"Loaded {len(instances)} instances from {file_path}")
 
         random.shuffle(instances)
 
-        logger.info(f"Loaded {len(instances)} instances from {file_path}")
 
         if instance_ids:
             instances = [
@@ -369,10 +386,6 @@ class Evaluation:
         if not os.path.exists(log_dir):
             os.makedirs(log_dir)
 
-        completion_log_dir = os.path.join(instance_dir, "completion_logs")
-        os.makedirs(completion_log_dir, exist_ok=True)
-        litellm.callbacks = [LogHandler(completion_log_dir)]
-
         eval_result_path = os.path.join(instance_dir, "eval_result.json")
         if os.path.exists(eval_result_path):
             try:
@@ -392,7 +405,7 @@ class Evaluation:
             }
 
         logger.info(f"Evaluating {instance_id}")
-        problem_statement = f"<task>\n{instance['problem_statement']}\n</task>"
+        problem_statement = f"task>\nSolve the following reported issue in the {instance['repo']} repository:\n\n{instance['problem_statement']}\n</task>"
 
         runtime = None
         repository = None
@@ -465,9 +478,6 @@ class Evaluation:
                         message_history_type=self.settings.agent_message_history_type,
                     )
 
-                    agent_role = f"""You are an autonomous AI assistant and a core member of the development team for the {instance["repo"]} project. As a senior developer on the team, you have deep knowledge of the codebase and best practices."""
-                    agent.system_prompt = f"{agent_role}\n\n{agent.system_prompt}"
-
                     if self.selector:
                         selector = self.selector
                     elif self.settings.best_first:
@@ -477,7 +487,7 @@ class Evaluation:
 
                     if self.settings.max_expansions > 1:
                         value_function = CodingValueFunction(
-                            completion=self._create_completion_model(
+                            completion_model=self._create_completion_model(
                                 self.settings.value_function_model
                             )
                         )

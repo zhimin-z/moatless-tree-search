@@ -43,99 +43,6 @@ logger = logging.getLogger(__name__)
 
 
 class CodingAgent(ActionAgent):
-    def generate_system_prompt(self, possible_actions: List[Type[Action]]) -> str:
-        if self.system_prompt:
-            prompt = self.system_prompt
-        elif self.message_history_type == MessageHistoryType.REACT:
-            prompt = REACT_SYSTEM_PROMPT
-        else:
-            prompt = SYSTEM_PROMPT
-
-        few_shot_examples = []
-        for action in possible_actions:
-            examples = action.get_few_shot_examples()
-            if examples:
-                few_shot_examples.extend(examples)
-
-        if few_shot_examples:
-            prompt += "\n\n# Examples\nHere are some examples of how to use the available actions:\n\n"
-            for i, example in enumerate(few_shot_examples):
-                if self.completion.response_format == LLMResponseFormat.REACT:
-                    prompt += f"\n**Example {i+1}**"
-                    action_data = example.action.model_dump()
-                    scratch_pad = action_data.pop("scratch_pad", "")
-                    
-                    # Special handling for StringReplace and CreateFile action
-                    if example.action.__class__.__name__ in ["StringReplaceArgs", "CreateFileArgs", "AppendStringArgs"]:
-                        prompt += f"\nTask: {example.user_input}"
-                        prompt += f"\nThought: {scratch_pad}\n"
-                        prompt += f"Action: {example.action.name}\n"
-                        
-                        if example.action.__class__.__name__ == "StringReplaceArgs":
-                            prompt += f"<path>{action_data['path']}</path>\n"
-                            prompt += f"<old_str>\n{action_data['old_str']}\n</old_str>\n"
-                            prompt += f"<new_str>\n{action_data['new_str']}\n</new_str>\n"
-                        elif example.action.__class__.__name__ == "AppendStringArgs":
-                            prompt += f"<path>{action_data['path']}</path>\n"
-                            prompt += f"<new_str>\n{action_data['new_str']}\n</new_str>\n"
-                        elif example.action.__class__.__name__ == "CreateFileArgs":
-                            prompt += f"<path>{action_data['path']}</path>\n"
-                            prompt += f"<file_text>\n{action_data['file_text']}\n</file_text>\n"
-                    else:
-                        # Original JSON format for other actions
-                        prompt += (
-                            f"\nTask: {example.user_input}"
-                            f"Thought: {scratch_pad}\n"
-                            f"Action: {example.action.name}\n"
-                            f"{json.dumps(action_data)}\n\n"
-                        )
-                    
-                elif self.completion.response_format == LLMResponseFormat.JSON:
-                    action_json = {
-                        "action": example.action.model_dump(),
-                        "action_type": example.action.name,
-                    }
-                    prompt += f"User: {example.user_input}\nAssistant:\n```json\n{json.dumps(action_json, indent=2)}\n```\n\n"
-
-        return prompt
-
-    def determine_possible_actions(self, node: Node) -> List[Action]:
-        possible_actions = self.actions.copy()
-
-        # Remove Finish if a sibling has already finished
-        # possible_actions = self.filter_finished(node, possible_actions)
-
-        logger.info(
-            f"Possible actions for Node{node.node_id}: {[action.__class__.__name__ for action in possible_actions]}"
-        )
-
-        return possible_actions
-
-    def filter_finished(self, node: Node, possible_actions: List[Action]):
-        siblings = node.get_sibling_nodes()
-        has_finished = any(child.action.name == "Finish" for child in siblings)
-        if has_finished:
-            possible_actions = [
-                action for action in possible_actions if action.name != "Finish"
-            ]
-        return possible_actions
-
-    def filter_duplicates(self, node: Node, possible_actions: List[Action]):
-        # Remove actions that have been marked as duplicates
-        if node.parent:
-            siblings = [
-                child for child in node.parent.children if child.node_id != node.node_id
-            ]
-            duplicate_actions = set(
-                child.action.name for child in siblings if child.is_duplicate
-            )
-            possible_actions = [
-                action
-                for action in possible_actions
-                if action.name not in duplicate_actions
-            ]
-
-        return possible_actions
 
     @classmethod
     def create(
@@ -145,10 +52,9 @@ class CodingAgent(ActionAgent):
         code_index: CodeIndex | None = None,
         runtime: RuntimeEnvironment | None = None,
         edit_completion_model: CompletionModel | None = None,
-        message_history_type: MessageHistoryType = MessageHistoryType.REACT,
+        message_history_type: MessageHistoryType | None = None,
         **kwargs,
     ):
-        system_prompt = None
         if completion_model.supports_anthropic_computer_use:
             actions = create_claude_coding_actions(
                 repository=repository,
@@ -156,25 +62,48 @@ class CodingAgent(ActionAgent):
                 completion_model=completion_model,
             )
             system_prompt = CLAUDE_REACT_PROMPT
+            action_type = "Claude actions with computer use capability"
+            use_few_shots = False
         else:
             actions = create_edit_code_actions(
                 repository=repository,
                 code_index=code_index,
                 completion_model=completion_model,
             )
-
             system_prompt = SYSTEM_PROMPT
-        
+            action_type = "standard edit code actions"
+            use_few_shots = True
+
+        if message_history_type is None:
+            if completion_model.response_format == LLMResponseFormat.TOOLS:
+                message_history_type = MessageHistoryType.MESSAGES
+            else:
+                message_history_type = MessageHistoryType.REACT
+
         message_generator = MessageHistoryGenerator(
             message_history_type=message_history_type,
             include_file_context=True
         )
+
+        config = {
+            "completion_model": completion_model.__class__.__name__,
+            "code_index_enabled": code_index is not None,
+            "runtime_enabled": runtime is not None,
+            "edit_completion_model": edit_completion_model.__class__.__name__ if edit_completion_model else None,
+            "action_type": action_type,
+            "actions": [a.__class__.__name__ for a in actions],
+            "message_history_type": message_history_type.value,
+            "file_context_enabled": True
+        }
+        
+        logger.info(f"Created CodingAgent with configuration: {json.dumps(config, indent=2)}")
 
         return cls(
             completion=completion_model,
             actions=actions,
             system_prompt=system_prompt,
             message_generator=message_generator,
+            use_few_shots=use_few_shots,
             **kwargs,
         )
 
@@ -270,8 +199,11 @@ def create_claude_coding_actions(
 ) -> List[Action]:
     actions = create_base_actions(repository, code_index, completion_model)
     actions.append(
-        ClaudeEditTool(code_index=code_index, repository=repository)
+        ClaudeEditTool(code_index=code_index, repository=repository),
+
     )
+    actions.append(ListFiles())
+    actions.append(RunTests(repository=repository, code_index=code_index))
     actions.extend([Finish(), Reject()])
     return actions
 

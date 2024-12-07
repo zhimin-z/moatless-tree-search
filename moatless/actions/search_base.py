@@ -35,7 +35,7 @@ The previous messages will contain:
 
 3. Respond with the Identify Action:
    * Select and respond with the code sections that best match the search request
-   * Provide your analysis in the scratch_pad field
+   * Provide your analysis in the thoughts field
    * List the relevant file paths with start and end line numbers in the identified_spans field
 """
 
@@ -70,8 +70,8 @@ class IdentifiedSpans(BaseModel):
 class Identify(StructuredOutput):
     """Identify if the provided search result is relevant to the reported issue."""
 
-    scratch_pad: str = Field(
-        ...,
+    thoughts: Optional[str] = Field(
+        None,
         description="Your thoughts and analysis on the search results and how they relate to the reported issue.",
     )
 
@@ -130,7 +130,7 @@ class SearchBaseAction(Action):
 
         properties = {"search_hits": [], "search_tokens": 0}
 
-        search_result_context = self._search_for_context(args)
+        search_result_context, alternative_suggestion = self._search_for_context(args)
 
         if search_result_context.is_empty():
             properties["fail_reason"] = "no_search_hits"
@@ -140,8 +140,18 @@ class SearchBaseAction(Action):
         properties["search_hits"] = search_result_context.model_dump(exclude_none=True)
 
         completion = None
-        if (
-            search_result_context.context_size() > self.max_search_tokens
+
+        if search_result_context.span_count() == 1 and search_result_context.context_size() > self.max_identify_tokens:
+            logger.warning(
+                f"{self.name}: Conext for {search_result_context.create_summary()} is too large ({search_result_context.context_size()} tokens)."
+            )
+            properties["fail_reason"] = "search_too_large"
+            return Observation(
+                message="Search too large. Found a single code section that is too large to view. Please refine the search query.",
+                properties=properties
+            )
+        elif (
+            (search_result_context.context_size() > self.max_search_tokens and search_result_context.span_count() > 1)
             or search_result_context.span_count() > self.max_hits
         ):
             logger.info(
@@ -160,6 +170,8 @@ class SearchBaseAction(Action):
             if view_context.has_file(file.file_path) and file.patch:
                 view_context.get_file(file.file_path).set_patch(file.patch)
 
+        new_span_ids = file_context.add_file_context(view_context)
+
         if view_context.is_empty():
             search_result_str += (
                 "\n\nNone of the search results was relevant to the task."
@@ -167,14 +179,20 @@ class SearchBaseAction(Action):
             summary = "Didn't find any relevant code sections in the search results."
             message = search_result_str
         else:
-            summary = "Found the following relevant code spans:\n" + view_context.create_summary()
+            viewed_str = "that has already been viewed" if not new_span_ids else ""
+
+            if alternative_suggestion:
+                summary = f"Did not find an exact match but found the following alternative suggestions {viewed_str}:\n{view_context.create_summary()}"
+            else:
+                summary = f"Found the following relevant code spans {viewed_str}:\n{view_context.create_summary()}"
+
             message = "Found the following relevant code:\n"
             message += view_context.create_prompt(
-                    show_span_ids=False,
-                    show_line_numbers=True,
-                    exclude_comments=False,
-                    show_outcommented_code=True,
-                )
+                show_span_ids=False,
+                show_line_numbers=True,
+                exclude_comments=False,
+                show_outcommented_code=True,
+            )
 
         new_span_ids = file_context.add_file_context(view_context)
         properties["new_span_ids"] = new_span_ids
@@ -190,10 +208,12 @@ class SearchBaseAction(Action):
             execution_completion=completion,
         )
 
-    def _search_for_context(self, args: SearchBaseArgs) -> FileContext:
+    def _search_for_context(self, args: SearchBaseArgs) -> Tuple[FileContext, bool]:
+        alternative_suggestion = False
         search_result = self._search(args)
         if not search_result.hits:
             search_result = self._search_for_alternative_suggestion(args)
+            alternative_suggestion = True
             logger.info(
                 f"{self.name}: No relevant search results found. Will use alternative suggestion with {search_result.hits} hits."
             )
@@ -206,8 +226,8 @@ class SearchBaseAction(Action):
                 search_result_context.add_span_to_context(
                     hit.file_path, span.span_id, add_extra=True
                 )
-
-        return search_result_context
+                
+        return search_result_context, alternative_suggestion
 
     def _select_span_instructions(self, search_result: SearchCodeResponse) -> str:
         if not self.add_to_context:

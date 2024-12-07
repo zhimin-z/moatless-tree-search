@@ -1,5 +1,4 @@
 import pytest
-from unittest.mock import Mock
 
 from moatless.actions.string_replace import StringReplace, StringReplaceArgs, find_potential_matches, \
     find_exact_matches, find_match_when_ignoring_indentation
@@ -75,7 +74,11 @@ def test_string_replace_multiple_occurrences(repository, file_context):
     
     observation = action.execute(args, file_context)
     
-    assert observation.properties["fail_reason"] == "multiple_occurrences"
+    # Verify the error message contains the content of each match
+    assert 'Lines 2-2:\n```\n    message = "test"\n```' in observation.message
+    assert 'Lines 4-4:\n```\n    message = "test"\n```' in observation.message
+    assert "Try including more surrounding lines to create a unique match" in observation.message
+    assert observation.properties["flags"] == ["multiple_occurrences"]
     assert observation.expect_correction
 
 def test_string_replace_file_not_found(repository, file_context):

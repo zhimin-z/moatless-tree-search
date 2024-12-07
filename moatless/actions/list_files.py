@@ -31,11 +31,8 @@ class ListFiles(Action):
     args_schema = ListFilesArgs
 
     def execute(self, args: ListFilesArgs, file_context: FileContext) -> Observation:
-        if not file_context.repo:
-            return Observation(
-                message="No repository available",
-                expect_correction=False,
-            )
+        if not file_context._repo:
+            raise RuntimeError("Repository not available for listing files.")
 
         try:
             result = file_context._repo.list_directory(args.directory)
@@ -83,14 +80,14 @@ class ListFiles(Action):
             FewShotExample.create(
                 user_input="Show me what files are in the tests directory",
                 action=ListFilesArgs(
-                    scratch_pad="I'll list the contents of the tests directory to see what test files are available.",
+                    thoughts="I'll list the contents of the tests directory to see what test files are available.",
                     directory="tests"
                 ),
             ),
             FewShotExample.create(
                 user_input="What files are in the root directory?",
                 action=ListFilesArgs(
-                    scratch_pad="I'll list the contents of the root directory to see the project structure.",
+                    thoughts="I'll list the contents of the root directory to see the project structure.",
                     directory=""
                 ),
             ),

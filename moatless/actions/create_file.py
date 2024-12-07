@@ -92,10 +92,13 @@ class CreateFile(Action, CodeActionValueMixin, CodeModificationMixin):
             properties={"diff": diff, "success": True},
         )
 
-        self.run_tests(
+        test_summary = self.run_tests(
             file_path=str(path),
             file_context=file_context,
         )
+
+        if test_summary:
+            observation.message += f"\n\n{test_summary}"
 
         return observation
 
@@ -106,7 +109,7 @@ class CreateFile(Action, CodeActionValueMixin, CodeModificationMixin):
             FewShotExample.create(
                 user_input="Create a new Python file for handling user authentication",
                 action=CreateFileArgs(
-                    scratch_pad="Creating a new authentication module with basic user authentication functionality",
+                    thoughts="Creating a new authentication module with basic user authentication functionality",
                     path="auth/user_auth.py",
                     file_text="""import logging
 from typing import Optional
