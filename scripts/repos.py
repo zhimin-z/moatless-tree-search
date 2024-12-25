@@ -7,14 +7,25 @@ from moatless.benchmark.swebench.utils import create_repository
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-def main(split: str = "lite", repo_base_dir: str = "./repos"):
+def main(split: str = "lite", repo_base_dir: str = None):
     """
     Main function to fetch moatless instances and create repositories for each instance.
 
     Args:
         split (str): The dataset split to fetch instances from (default: "lite").
-        repo_base_dir (str): Base directory to create repositories (default: "./repos").
+        repo_base_dir (str): Base directory to create repositories. Defaults to the current directory's `repos`.
     """
+    # Get the absolute path of the current repository
+    current_repo_path = os.path.abspath(os.getcwd())
+    logger.info(f"Current repository path: {current_repo_path}")
+
+    # Set the repository base directory
+    if not repo_base_dir:
+        repo_base_dir = os.path.join(current_repo_path, "repos")
+    repo_base_dir = os.path.abspath(repo_base_dir)
+
+    logger.info(f"Repository base directory: {repo_base_dir}")
+
     # Fetch instances using the provided method
     logger.info(f"Fetching instances for split '{split}'...")
     instances = get_moatless_instances(split)
@@ -43,5 +54,5 @@ def main(split: str = "lite", repo_base_dir: str = "./repos"):
             logger.error(f"Failed to create repository for instance '{instance_id}': {e}")
 
 if __name__ == "__main__":
-    # Specify the split and repo directory as needed
-    main(split="lite", repo_base_dir="./repos")
+    # Specify the split and let the script determine the repo directory
+    main(split="lite")
