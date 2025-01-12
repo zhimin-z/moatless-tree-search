@@ -2,7 +2,7 @@ from typing import Optional, List, Type, ClassVar
 
 from pydantic import Field, model_validator
 
-from moatless.actions.model import ActionArguments, FewShotExample, Observation
+from moatless.actions.model import ActionArguments, FewShotExample
 from moatless.actions.search_base import SearchBaseAction, SearchBaseArgs
 from moatless.index.types import SearchCodeResponse
 
@@ -27,7 +27,7 @@ class SemanticSearchArgs(SearchBaseArgs):
         ..., description="Natural language description of what you're looking for."
     )
     category: Optional[str] = Field(
-        None,
+        "implementation",
         description="The category of files to search for. This can be 'implementation' for core implementation files or 'test' for test files.",
     )
 
@@ -45,6 +45,12 @@ class SemanticSearchArgs(SearchBaseArgs):
         if not self.query.strip():
             raise ValueError("query cannot be empty")
         return self
+
+    def short_summary(self) -> str:
+        param_str = f"query={self.query[:20]}, category={self.category}"
+        if self.file_pattern:
+            param_str += f", file_pattern={self.file_pattern}"
+        return f"{self.name}({param_str})"
 
 
 class SemanticSearch(SearchBaseAction):

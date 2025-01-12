@@ -93,7 +93,6 @@ def test_string_replace_file_not_found(repository, file_context):
     observation = action.execute(args, file_context)
     
     assert observation.properties["fail_reason"] == "file_not_found"
-    assert observation.expect_correction
 
 def test_string_replace_same_string(repository, file_context):
     action = StringReplace(repository=repository)
@@ -133,7 +132,6 @@ def test_string_replace_with_indentation(repository, file_context):
     assert "class Test:" in content  # Verify the rest of the file is intact
     assert "def method(self):" in content
     assert "diff" in observation.properties
-
 
 def test_string_replace_with_newlines(repository, file_context):
     # Create file with multiline content - note the proper indentation

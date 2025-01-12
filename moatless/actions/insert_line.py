@@ -8,19 +8,19 @@ from moatless.actions.action import Action
 from moatless.actions.code_action_value_mixin import CodeActionValueMixin
 from moatless.actions.code_modification_mixin import CodeModificationMixin
 from moatless.actions.model import ActionArguments, Observation, FewShotExample
-from moatless.actions.run_tests import RunTests, RunTestsArgs
 from moatless.file_context import FileContext
 from moatless.index import CodeIndex
 from moatless.repository.file import do_diff
 from moatless.repository.repository import Repository
 from moatless.runtime.runtime import RuntimeEnvironment
+from moatless.workspace import Workspace
 
 logger = logging.getLogger(__name__)
 
 SNIPPET_LINES = 4
 
 
-class InsertLineArgs(ActionArguments):
+class InsertLinesArgs(ActionArguments):
     """
     Insert text at a specific line number in a file.
 
@@ -56,7 +56,7 @@ class InsertLine(Action, CodeActionValueMixin, CodeModificationMixin):
     Action to insert text at a specific line in a file.
     """
 
-    args_schema = InsertLineArgs
+    args_schema = InsertLinesArgs
 
     def __init__(
         self,
@@ -71,7 +71,12 @@ class InsertLine(Action, CodeActionValueMixin, CodeModificationMixin):
         object.__setattr__(self, "_code_index", code_index)
         object.__setattr__(self, "_repository", repository)
 
-    def execute(self, args: InsertLineArgs, file_context: FileContext) -> Observation:
+    def execute(
+        self,
+        args: InsertLinesArgs,
+        file_context: FileContext | None = None,
+        workspace: Workspace | None = None,
+    ) -> Observation:
         if args.path.startswith("/repo"):
             args.path = args.path[5:]
         if args.path.startswith("/"):
@@ -146,25 +151,13 @@ class InsertLine(Action, CodeActionValueMixin, CodeModificationMixin):
             message=success_msg,
             properties={"diff": diff, "success": True},
         )
-
-        if not self._runtime:
-            return observation
-
-        run_tests = RunTests(
-            repository=self._repository,
-            runtime=self._runtime,
-            code_index=self._code_index,
-        )
-        test_observation = run_tests.execute(
-            RunTestsArgs(
-                thoughts=args.thoughts,
-                test_files=[args.path],
-            ),
-            file_context,
+        test_summary = self.run_tests(
+            file_path=str(path),
+            file_context=file_context,
         )
 
-        observation.properties.update(test_observation.properties)
-        observation.message += "\n\n" + test_observation.message
+        if test_summary:
+            observation.message += f"\n\n{test_summary}"
 
         return observation
 
@@ -173,7 +166,7 @@ class InsertLine(Action, CodeActionValueMixin, CodeModificationMixin):
         return [
             FewShotExample.create(
                 user_input="Add a new import statement at the beginning of the file",
-                action=InsertLineArgs(
+                action=InsertLinesArgs(
                     thoughts="Adding import for datetime module",
                     path="utils/time_helper.py",
                     insert_line=1,
@@ -182,7 +175,7 @@ class InsertLine(Action, CodeActionValueMixin, CodeModificationMixin):
             ),
             FewShotExample.create(
                 user_input="Add a new method to the UserProfile class",
-                action=InsertLineArgs(
+                action=InsertLinesArgs(
                     thoughts="Adding a method to update user preferences",
                     path="models/user.py",
                     insert_line=15,
@@ -194,7 +187,7 @@ class InsertLine(Action, CodeActionValueMixin, CodeModificationMixin):
             ),
             FewShotExample.create(
                 user_input="Add a new configuration option",
-                action=InsertLineArgs(
+                action=InsertLinesArgs(
                     thoughts="Adding Redis configuration settings",
                     path="config/settings.py",
                     insert_line=25,

@@ -1,16 +1,71 @@
 import logging
 import math
 import random
+import re
 from dataclasses import dataclass
-from typing import List, Type, Literal, Dict, Any, Tuple
+from typing import List, Type, Literal, Dict, Any, Tuple, Optional
 
 import numpy as np
 from pydantic import BaseModel, Field, PrivateAttr
 
 from moatless.node import Node
 from moatless.selector.similarity import calculate_similarity
+from moatless.utils.parse import parse_value, parse_explanation
 
 logger = logging.getLogger(__name__)
+
+
+def build_ascii_tree(self, node: Node, prefix: str = "", is_last: bool = True) -> str:
+    """
+    Build an ASCII representation of the search tree starting from the given node.
+
+    Args:
+        node: The current node to process
+        prefix: The prefix to use for the current line (for indentation)
+        is_last: Whether this node is the last child of its parent
+
+    Returns:
+        A string containing the ASCII tree representation
+    """
+    # Start with the current line's prefix
+    current_prefix = "└─" if is_last else "├─"
+
+    # Build the node information string
+    node_info = f"[{node.node_id}] {node.action.__class__.__name__ if node.action else 'Pending'}"
+    node_info += f" (depth: {node.get_depth()}, visits: {node.visits}"
+    node_info += f", value: {node.reward.value:.2f}" if node.reward else ", value: 0.00"
+
+    # Calculate average reward if the node has been visited
+    if node.visits > 0:
+        total_reward = sum(
+            child.reward.value for child in node.get_descendants() if child.reward
+        )
+        total_nodes = sum(1 for _ in node.get_descendants() if _.reward)
+        avg_reward = total_reward / total_nodes if total_nodes > 0 else 0
+        node_info += f", avg: {avg_reward:.2f}"
+
+    node_info += ")"
+
+    # Combine prefix and node information
+    result = f"{prefix}{current_prefix}{node_info}\n"
+
+    # Add feedback if it exists
+    if node.observation and node.observation.feedback:
+        feedback_lines = node.observation.feedback.split("\n")
+        feedback_prefix = prefix + ("    " if is_last else "│   ")
+        for line in feedback_lines:
+            if line.strip():  # Only add non-empty lines
+                result += f"{feedback_prefix}{line.strip()}\n"
+
+    # Process children
+    children = list(node.children)
+    for i, child in enumerate(children):
+        next_prefix = prefix + ("    " if is_last else "│   ")
+        result += self.build_ascii_tree(
+            child, prefix=next_prefix, is_last=(i == len(children) - 1)
+        )
+
+    return result
 
 
 @dataclass
@@ -53,6 +108,10 @@ class UCTScore:
 class Selector(BaseModel):
     type: Literal["BestFirstSelector", "SoftmaxSelector"] = Field(
         ..., description="The type of selector"
+    )
+    minimum_reward_threshold: float = Field(
+        default=-float("inf"),
+        description="Minimum reward threshold for node selection. Nodes below this value will not be considered.",
     )
     exploitation_weight: float = Field(
         default=1.0,
@@ -126,7 +185,39 @@ class Selector(BaseModel):
     _similarity_cache: Dict[Tuple[int, int], float] = PrivateAttr(default_factory=dict)
 
     def select(self, expandable_nodes: List[Node]) -> Node:
-        raise NotImplementedError("Subclasses must implement the select method.")
+        """Base select method with common validation logic"""
+        if len(expandable_nodes) == 0:
+            raise ValueError("No expandable nodes provided")
+
+        if len(expandable_nodes) == 1:
+            return expandable_nodes[0]
+
+        # Filter nodes based on minimum reward threshold
+        valid_nodes = [
+            node
+            for node in expandable_nodes
+            if self._get_reward(node) >= self.minimum_reward_threshold
+        ]
+
+        # If no nodes meet the threshold, return root if it's expandable
+        if not valid_nodes:
+            root = expandable_nodes[0].get_root()
+            if root.is_expandable():
+                return root
+            # If root is not expandable, return None
+            return None
+
+        return self._select_node(valid_nodes)
+
+    def _get_reward(self, node: Node):
+        if self.use_average_reward:
+            return node.calculate_mean_reward()
+        else:
+            return node.reward.value if node.reward else 0
+
+    def _select_node(self, nodes: List[Node]) -> Node:
+        """Internal selection method to be implemented by subclasses"""
+        raise NotImplementedError("Subclasses must implement _select_node method")
 
     def uct_score(self, node: Node) -> UCTScore:
         """
@@ -479,6 +570,8 @@ class Selector(BaseModel):
                 return BestFirstSelector(**obj)
             elif selector_type == "SoftmaxSelector":
                 return SoftmaxSelector(**obj)
+            elif selector_type == "LLMSelector":
+                return LLMSelector(**obj)
             else:
                 raise ValueError(f"Unknown selector type: {selector_type}")
         return super().model_validate(obj)
@@ -492,12 +585,9 @@ class Selector(BaseModel):
 class BestFirstSelector(Selector):
     type: Literal["BestFirstSelector"] = "BestFirstSelector"
 
-    def select(self, expandable_nodes: List[Node]) -> Node:
-        if len(expandable_nodes) == 1:
-            return expandable_nodes[0]
-
-        # Calculate UCT scores with components
-        nodes_with_scores = [(node, self.uct_score(node)) for node in expandable_nodes]
+    def _select_node(self, nodes: List[Node]) -> Node:
+        # Move existing selection logic here
+        nodes_with_scores = [(node, self.uct_score(node)) for node in nodes]
         sorted_nodes = sorted(
             nodes_with_scores, key=lambda x: x[1].final_score, reverse=True
         )
@@ -512,7 +602,6 @@ class BestFirstSelector(Selector):
                 f"\nScore components: {score}"
             )
 
-        # Select the node with the highest UCT score
         selected_node = sorted_nodes[0][0]
         selected_score = sorted_nodes[0][1].final_score
 
@@ -525,20 +614,18 @@ class BestFirstSelector(Selector):
 class SoftmaxSelector(Selector):
     type: Literal["SoftmaxSelector"] = "SoftmaxSelector"
 
-    def select(self, expandable_nodes: List[Node]) -> Node:
-        if len(expandable_nodes) == 1:
-            return expandable_nodes[0]
-
-        nodes_with_scores = [(node, self.uct_score(node)) for node in expandable_nodes]
+    def _select_node(self, nodes: List[Node]) -> Node:
+        # Move existing selection logic here
+        nodes_with_scores = [(node, self.uct_score(node)) for node in nodes]
         uct_scores = [score.final_score for _, score in nodes_with_scores]
 
         # Calculate softmax probabilities
         softmax_scores = np.exp(uct_scores - np.max(uct_scores))
         probabilities = softmax_scores / softmax_scores.sum()
 
-        # Log summary for top nodes (limited to 10)
+        # Log summary for top nodes
         top_nodes = sorted(
-            zip(expandable_nodes, uct_scores, probabilities),
+            zip(nodes, uct_scores, probabilities),
             key=lambda x: x[1],
             reverse=True,
         )[:10]
@@ -552,8 +639,8 @@ class SoftmaxSelector(Selector):
             )
 
         # Select a node based on the probabilities
-        selected_node = random.choices(expandable_nodes, weights=probabilities, k=1)[0]
-        selected_index = expandable_nodes.index(selected_node)
+        selected_node = random.choices(nodes, weights=probabilities, k=1)[0]
+        selected_index = nodes.index(selected_node)
 
         logger.info(
             f"Selected Node {selected_node.node_id}: "
@@ -562,3 +649,257 @@ class SoftmaxSelector(Selector):
         )
 
         return selected_node
+
+
+from instructor import OpenAISchema
+from pydantic import Field
+
+
+class NodeSelection(OpenAISchema):
+    # """
+
+    # Scores range from -100 to 100.
+    # Select expandable nodes.
+
+    # OUTPUT FORMAT:
+    # <node_id>: Selected node ID
+    # <explanation>: Adress the agent responsible for generating the next action directly (e.g. "You should ...") with the following information:
+    #     ANCESTRY: Parent context, sibling outcomes, path differences.
+    #     CURRENT: Node state/potential, relation to successful paths.
+    #     DESCENDANTS: Child outcomes, pitfalls, unexplored directions.
+    #     GUIDANCE: Specific recommendations for the next action based on the information gathered from the tree.
+    # """
+    node_id: int = Field(description="The ID of the selected node")
+    explanation: str = Field(
+        description="Actionable guidance to the software engineer agent responsible for generating the next action."
+    )
+
+
+from pydantic import Field
+from moatless.node import Node, generate_ascii_tree
+from moatless.completion.model import Message, Completion
+from moatless.completion.completion import CompletionModel
+from moatless.selector.prompt import SYSTEM_PROMPT, ALL_EXAMPLES
+
+
+class LLMSelector(Selector):
+    type: Literal["LLMSelector"] = "LLMSelector"
+    completion: Optional[CompletionModel] = Field(
+        default=None, description="The completion model used to generate responses"
+    )
+    max_iterations: Optional[int] = Field(
+        default=None, description="Maximum number of iterations for the selector"
+    )
+
+    def __init__(
+        self, completion: CompletionModel = None, max_iterations: int = None, **kwargs
+    ):
+        # Initialize with all fields, including those from base class
+        all_kwargs = {
+            "type": "LLMSelector",
+            "completion": completion,
+            "max_iterations": max_iterations,
+            **kwargs,
+        }
+        super().__init__(**all_kwargs)
+
+    def get_action_definitions(self) -> str:
+        """
+        Build a formatted string containing descriptions of all available actions.
+        """
+        try:
+            from moatless.actions import (
+                SemanticSearch,
+                FindClass,
+                FindFunction,
+                FindCodeSnippet,
+                Finish,
+                # Remove RequestMoreContext since it doesn't exist
+                # RequestMoreContext,
+            )
+
+            definitions = "\nAvailable Actions:\n"
+            available_actions = [
+                SemanticSearch,
+                FindClass,
+                FindFunction,
+                FindCodeSnippet,
+                Finish,
+                # Remove from this list as well
+                # RequestMoreContext,
+            ]
+
+            for action_class in available_actions:
+                try:
+                    schema = action_class.args_schema.model_json_schema()
+                    definitions += f"\n* **{schema['title']}**: {schema.get('description', 'No description available')}"
+
+                    # Add parameter descriptions if they exist
+                    if "properties" in schema:
+                        for param_name, param_info in schema["properties"].items():
+                            if "description" in param_info:
+                                definitions += (
+                                    f"\n  - {param_name}: {param_info['description']}"
+                                )
+
+                except Exception as e:
+                    logger.error(
+                        f"Error getting schema for action {action_class.__name__}: {e}"
+                    )
+                    continue
+
+            return definitions
+        except Exception as e:
+            logger.error(f"Error building action definitions: {e}")
+            return "\nAction definitions unavailable."
+
+    def build_ascii_tree(
+        self,
+        node: Node,
+        previous_attempts: str = "",
+        n_iterations: int = 0,
+        require_feedback: bool = True,
+    ) -> NodeSelection:
+        # Generate ASCII tree representation
+        ascii_tree = generate_ascii_tree(
+            node,
+            include_explanation=True,
+            use_color=False,
+            include_diffs=True,
+            include_action_details=False,
+            include_file_context=False,
+        )
+
+        # also print tree with colors so we can see it
+        ascii_tree_colored = generate_ascii_tree(
+            node,
+            use_color=True,
+            include_diffs=True,
+            include_action_details=False,
+            include_file_context=False,
+        )
+
+        # Construct the system message with context based on feedback requirement
+        system_message = f"{SYSTEM_PROMPT}\n\n"
+        if require_feedback:
+            system_message += (
+                f"Here are some example responses:\n\n" f"{ALL_EXAMPLES}\n\n"
+            )
+        system_message += (
+            f"Iteration Status: Currently in iteration {n_iterations} out of {self.max_iterations} available iterations.\n\n"
+            f"{self.get_action_definitions()}"
+        )
+
+        # Create messages for LLM
+        user_content = f"Given the following MCTS tree, select the most promising node for expansion. "
+        if require_feedback:
+            user_content += (
+                f"Respond using these exact tags:\n"
+                f"<node_id>: [number of the selected node]\n"
+                f"<feedback>: [detailed feedback information and guidance]\n\n"
+            )
+        else:
+            user_content += "Respond with only the node number.\n\n"
+
+        user_content += f"Current tree:\n{ascii_tree}\n\n" f"{previous_attempts}"
+        if require_feedback:
+            user_content += f"Consider both exploration (nodes with few visits) and exploitation (nodes with high rewards)."
+
+        messages = [Message(role="user", content=user_content)]
+
+        try:
+            # Use create_text_completion instead of create_completion
+            response_text, completion = self.completion.create_text_completion(
+                messages=messages,
+                system_prompt=system_message,
+            )
+
+            # Convert Message objects to dictionaries and format the response
+            input_messages = [{"role": "system", "content": system_message}] + [
+                {"role": msg.role, "content": msg.content} for msg in messages
+            ]
+
+            # Add debug logging
+            print(f"Storing selector completion for Node{node.node_id}")
+
+            node.completions["selector"] = Completion(
+                model=self.completion.model,
+                input=input_messages,
+                response={"content": response_text},
+                usage=completion.usage if hasattr(completion, "usage") else None,
+            )
+
+            # Verify storage
+            print(f"Stored completion keys: {node.completions.keys()}")
+
+            try:
+                # Parse node_id using the parse_value function
+                node_id = parse_value(response_text, keyword="node_id")
+                if node_id is None:
+                    # Fallback to looking for just a number if the parsing fails
+                    numbers = re.findall(r"\d+", response_text)
+                    if numbers:
+                        node_id = int(numbers[0])
+                    else:
+                        raise ValueError(
+                            "Could not find a valid node ID in the response"
+                        )
+
+                # Parse explanation using the parse_explanation function
+                explanation = parse_explanation(response_text)
+                if not explanation:
+                    # Fallback to everything after the node ID if no explicit explanation found
+                    explanation = response_text.split(str(node_id))[-1].strip()
+
+                return NodeSelection(node_id=node_id, explanation=explanation)
+
+            except Exception as e:
+                logger.error(
+                    f"Failed to parse LLM response: {e}\nResponse text: {response_text}"
+                )
+                raise e
+
+        except Exception as e:
+            logger.error(f"Failed to get LLM completion: {e}")
+            raise e
+
+    def select(self, nodes: List[Node]) -> Node:
+        if len(nodes) == 1:
+            return nodes[0]
+
+        max_retries = 3
+        n_iterations = len(nodes)
+        available_node_ids = [node.node_id for node in nodes]
+        previous_attempts = ""
+
+        for attempt in range(max_retries):
+            # Get the selection from LLM, now passing n_iterations
+            selection = self.build_ascii_tree(nodes[0], previous_attempts, n_iterations)
+
+            # Find and return the selected node
+            for node in nodes:
+                if node.node_id == selection.node_id:
+                    # try:
+                    #     node.feedback = selection.explanation
+                    #     node.message = selection.explanation
+                    #     node.reward.explanation += f"\n{selection.explanation}"
+                    # except AttributeError:
+                    #     logger.warning(f"Node {node.node_id}, has no reward attribute")
+                    return node
+
+            # If we get here, the selected node wasn't in the list
+            logger.warning(
+                f"Selected node {selection.node_id} not in available nodes {available_node_ids}, retrying..."
+            )
+
+            # Add feedback about available nodes for next attempt
+            previous_attempts += (
+                f"\nPrevious attempt selected node {selection.node_id} which is not available for expansion. "
+                f"Please select from these nodes: {available_node_ids}\n"
+            )
+
+        # If we've exhausted all retries, fall back to the first available node
+        logger.warning(
+            f"Failed to select valid node after {max_retries} attempts, falling back to first available node"
+        )
+        return nodes[0]

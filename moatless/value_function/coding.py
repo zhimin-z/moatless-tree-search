@@ -6,41 +6,62 @@ from moatless.completion.model import Completion
 from moatless.node import Node
 from moatless.value_function.base import ValueFunction
 from moatless.value_function.model import Reward
+from moatless.value_function.terminal import TerminalValueFunction
 
 logger = logging.getLogger(__name__)
 
 FAILURE_REWARDS = {
-    'MAJOR': {
-        'file_not_found': 'Requested file does not exist in repository',
-        'is_directory': 'Requested path is a directory, not a file',
-        'invalid_file': 'File exists but could not be parsed or is empty',
-        'no_spans_found': 'No code spans found matching the request',
-        'string_not_found': 'String to replace was not found in file',
-        'string_already_exists': 'New string already exists in file',
-        'no_changes': 'Old and new strings are identical - no changes needed',
+    "MAJOR": {
+        "file_not_found": "Requested file does not exist in repository",
+        "is_directory": "Requested path is a directory, not a file",
+        "invalid_file": "File exists but could not be parsed or is empty",
+        "no_spans_found": "No code spans found matching the request",
+        "string_not_found": "String to replace was not found in file",
+        "string_already_exists": "New string already exists in file",
+        "no_changes": "Old and new strings are identical - no changes needed",
     },
-
-    'MINOR': {
-        'too_many_tokens': 'Requested context exceeds token limit, needs to be more specific',
-        'no_spans_added': 'Requested spans were already in context',
-        'no_search_hits': 'Search returned no results',
-        'file_exists': 'Cannot create file - it already exists',
-        'multiple_occurrences': 'Multiple occurrences of string found - need more context',
-        'indentation_differs': 'Content matches but indentation is incorrect',
-        'line_breaks_differs': 'Content matches but line breaks are incorrect',
-        'multiple_format_matches': 'Multiple potential matches with different formatting found',
-    }
+    "MINOR": {
+        "too_many_tokens": "Requested context exceeds token limit, needs to be more specific",
+        "no_spans_added": "Requested spans were already in context",
+        "no_search_hits": "Search returned no results",
+        "file_exists": "Cannot create file - it already exists",
+        "multiple_occurrences": "Multiple occurrences of string found - need more context",
+        "indentation_differs": "Content matches but indentation is incorrect",
+        "line_breaks_differs": "Content matches but line breaks are incorrect",
+        "multiple_format_matches": "Multiple potential matches with different formatting found",
+    },
 }
 
-FAILURE_VALUES = {
-    'MAJOR': -50,
-    'MINOR': -25
-}
+FAILURE_VALUES = {"MAJOR": -50, "MINOR": -25}
+
 
 class CodingValueFunction(ValueFunction):
-
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
+        self._terminal_function = TerminalValueFunction(
+            completion_model=self.completion_model
+        )
+
+    def is_test(self, file_path: str) -> bool:
+        """
+        Determines if a file path represents a test file.
+
+        Args:
+            file_path (str): Path to the file to check
+
+        Returns:
+            bool: True if the file is a test file, False otherwise
+        """
+        file_name = file_path.lower()
+        return any(
+            [
+                "test" in file_name,
+                file_name.startswith("test_"),
+                file_name.endswith("_test.py"),
+                "/tests/" in file_path.replace("\\", "/"),
+                "conftest.py" in file_name,
+            ]
+        )
 
     def get_reward(self, node: Node) -> Tuple[Reward, Optional[Completion]]:
         if node.observation.expect_correction and self.correction_award is not None:
@@ -49,7 +70,11 @@ class CodingValueFunction(ValueFunction):
             current_node = node.parent
 
             # Check parent nodes for expect_correction
-            while current_node and current_node.observation and current_node.observation.expect_correction:
+            while (
+                current_node
+                and current_node.observation
+                and current_node.observation.expect_correction
+            ):
                 if (
                     current_node.observation
                     and current_node.observation.expect_correction
@@ -64,6 +89,10 @@ class CodingValueFunction(ValueFunction):
             )
             return Reward(value=final_reward, explanation="Expects a correction"), None
 
+        if node.action.name == "Finish":
+            logger.info(f"Run finish function")
+            return self._terminal_function.get_reward(node)
+
         if node.action.name == "Reject":
             logger.info(f"Reject action, assigning reward -100")
             return Reward(value=-100, explanation="Reject action"), None
@@ -72,67 +101,81 @@ class CodingValueFunction(ValueFunction):
             fail_reason = node.observation.properties.get("fail_reason")
             if fail_reason:
                 logger.info(f"Action failed with reason: {fail_reason}")
-                
+
                 # Find the severity and explanation for the failure
                 for severity, failures in FAILURE_REWARDS.items():
                     if fail_reason in failures:
                         return Reward(
                             value=FAILURE_VALUES[severity],
-                            explanation=failures[fail_reason]
+                            explanation=failures[fail_reason],
                         ), None
-                
+
                 # Default case for unknown failures
                 return Reward(value=-100, explanation="Action failed"), None
 
             if isinstance(node.action, SearchBaseArgs):
-                if not node.observation.properties.get("new_span_ids"):  # TODO Use fail reason?
+                if not node.observation.properties.get(
+                    "new_span_ids"
+                ):  # TODO Use fail reason?
                     return Reward(
-                        value=-25,
+                        value=0,
                         explanation="Search returned results but did not add any new spans to the context",
                     ), None
-
                 return Reward(
-                    value=50,
+                    value=100,
                     explanation="Search returned results and added new spans to the context",
                 ), None
 
-            if node.file_context.was_edited():
-                passed_count, failure_count, error_count = node.file_context.get_test_counts()
+            if node.file_context and node.file_context.was_edited():
+                edited_files = node.file_context.get_edited_files()
+                created_files = node.file_context.get_created_files()
+
+                has_test_changes = any(self.is_test(file) for file in edited_files)
+                has_new_tests = any(self.is_test(file) for file in created_files)
+
+                # Get current test results
+                passed_count, failure_count, error_count = (
+                    node.file_context.get_test_counts()
+                )
+                total_tests = passed_count + failure_count + error_count
 
                 # Get previous test results
                 previous_failure_count = 0
                 previous_error_count = 0
-                previous_passed_count = 0
-                previous_reward = 0
+                previous_reward = 100
                 parent_node = node.parent
-                if parent_node and parent_node.file_context:
-                    previous_passed_count, previous_failure_count, previous_error_count = parent_node.file_context.get_test_counts()
+                if (
+                    parent_node
+                    and parent_node.file_context
+                    and parent_node.file_context.was_edited()
+                ):
+                    (
+                        previous_passed_count,
+                        previous_failure_count,
+                        previous_error_count,
+                    ) = parent_node.file_context.get_test_counts()
                     if parent_node.reward:
                         previous_reward = parent_node.reward.value
-                    previous_total_tests = previous_passed_count + previous_failure_count + previous_error_count
 
-                # Compare with previous test results
-                total_tests = passed_count + failure_count + error_count
                 if total_tests == 0:
-                    return Reward(
-                        value=25, explanation="No tests run"
-                    ), None
+                    return Reward(value=50, explanation=f"No tests run"), None
                 elif failure_count == 0 and error_count == 0:
                     return Reward(
                         value=100, explanation=f"All {passed_count} tests passing"
                     ), None
-                elif previous_total_tests == 0:
-                    return Reward(
-                        value=50,
-                        explanation=f"First test run with {failure_count} failures and {error_count} errors",
-                    ), None
-                elif failure_count > previous_failure_count or error_count > previous_error_count:
-                    new_value = max(-100, previous_reward - 50)
+                elif (
+                    failure_count > previous_failure_count
+                    or error_count > previous_error_count
+                ):
+                    new_value = max(-100, previous_reward - 25)
                     return Reward(
                         value=new_value,
-                        explanation=f"Test failures/errors increased: failures {previous_failure_count}->{failure_count}, errors {previous_error_count}->{error_count}",
+                        explanation=f"Test failures increased: {previous_failure_count}->{failure_count}, errors {previous_error_count}->{error_count}",
                     ), None
-                elif failure_count < previous_failure_count and error_count <= previous_error_count:
+                elif (
+                    failure_count < previous_failure_count
+                    and error_count <= previous_error_count
+                ):
                     new_value = min(75, previous_reward + 25)
                     return Reward(
                         value=new_value,
@@ -164,7 +207,8 @@ class CodingValueFunction(ValueFunction):
                 ), None
 
             return Reward(
-                value=-25, explanation="Request completed but no new context was needed"
+                value=25, explanation="Request completed but no new context was needed"
             ), None
 
-        return super().get_reward(node)
+        logger.warning("Return default reward")
+        return Reward(value=50, explanation=""), None

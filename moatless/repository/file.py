@@ -231,6 +231,11 @@ class FileRepository(Repository):
             pattern_parts = file_pattern.split("/")
             filename = pattern_parts[-1]
 
+            # Fix invalid ** patterns in filename (e.g. **.py -> **/*.py)
+            if "**." in filename:
+                filename = filename.replace("**.", "**/*.")
+                pattern_parts[-1] = filename
+
             # If filename doesn't contain wildcards, it should be an exact match
             has_wildcards = any(c in filename for c in "*?[]")
             if not has_wildcards:
@@ -253,6 +258,10 @@ class FileRepository(Repository):
                     and "**/" not in file_pattern
                 ):
                     file_pattern = f"**/{file_pattern}"
+
+            # Reconstruct pattern if it was modified
+            if pattern_parts[-1] != filename:
+                file_pattern = "/".join(pattern_parts)
 
             repo_path = Path(self.repo_path)
             matched_files = []
@@ -334,35 +343,28 @@ class FileRepository(Repository):
             if not grep_pattern:
                 grep_pattern = "."
 
-            cmd = ["grep", "-n", "-r", search_text, grep_pattern]
+            # Always escape special regex characters to handle them literally
+            escaped_search_text = (
+                search_text.replace("[", "\\[")
+                .replace("]", "\\]")
+                .replace(".", "\\.")
+                .replace("+", "\\+")
+                .replace("*", "\\*")
+                .replace("?", "\\?")
+                .replace("|", "\\|")
+                .replace("{", "\\{")
+                .replace("}", "\\}")
+                .replace("$", "\\$")
+                .replace("^", "\\^")
+            )
+
+            cmd = ["grep", "-n", "-r", escaped_search_text, grep_pattern]
             logger.info(f"Executing grep command: {' '.join(cmd)}")
             logger.info(f"Search directory: {self.repo_path}")
 
             result = subprocess.run(
                 cmd, cwd=self.repo_path, capture_output=True, text=True
             )
-
-            # If grep fails with "Invalid regular expression", retry with escaped search text
-            if result.returncode not in (0, 1) and "Invalid regular expression" in result.stderr:
-                escaped_search_text = search_text.replace('[', '\\[') \
-                                               .replace(']', '\\]') \
-                                               .replace('(', '\\(') \
-                                               .replace(')', '\\)') \
-                                               .replace('.', '\\.') \
-                                               .replace('+', '\\+') \
-                                               .replace('*', '\\*') \
-                                               .replace('?', '\\?') \
-                                               .replace('|', '\\|') \
-                                               .replace('{', '\\{') \
-                                               .replace('}', '\\}') \
-                                               .replace('$', '\\$') \
-                                               .replace('^', '\\^')
-
-                cmd = ["grep", "-n", "-r", escaped_search_text, grep_pattern]
-                logger.info(f"Retrying with escaped search text: {' '.join(cmd)}")
-                result = subprocess.run(
-                    cmd, cwd=self.repo_path, capture_output=True, text=True
-                )
 
             if result.returncode not in (0, 1):  # grep returns 1 if no matches found
                 logger.info(
@@ -415,29 +417,28 @@ class FileRepository(Repository):
         Returns a dictionary with 'files' and 'directories' lists.
         """
         full_path = self.get_full_path(directory_path)
-        
+
         if not os.path.exists(full_path):
             return {"files": [], "directories": []}
-            
+
         if not os.path.isdir(full_path):
             return {"files": [], "directories": []}
 
         files = []
         directories = []
-        
+
         for entry in os.listdir(full_path):
             entry_path = os.path.join(full_path, entry)
-            relative_path = os.path.relpath(entry_path, self.repo_path).replace(os.sep, "/")
-            
+            relative_path = os.path.relpath(entry_path, self.repo_path).replace(
+                os.sep, "/"
+            )
+
             if os.path.isfile(entry_path):
                 files.append(relative_path)
             elif os.path.isdir(entry_path):
                 directories.append(relative_path)
-                
-        return {
-            "files": sorted(files),
-            "directories": sorted(directories)
-        }
+
+        return {"files": sorted(files), "directories": sorted(directories)}
 
 
 def remove_duplicate_lines(replacement_lines, original_lines):

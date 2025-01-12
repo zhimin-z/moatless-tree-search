@@ -15,6 +15,7 @@ from moatless.actions.model import (
 from moatless.file_context import FileContext
 from moatless.index import CodeIndex
 from moatless.repository.repository import Repository
+from moatless.workspace import Workspace
 
 logger = logging.getLogger(__name__)
 
@@ -29,15 +30,25 @@ class Action(BaseModel, ABC):
     def __init__(self, **data):
         super().__init__(**data)
 
-    def execute(self, args: ActionArguments, file_context: FileContext) -> Observation:
+    def execute(
+        self,
+        args: ActionArguments,
+        file_context: FileContext | None = None,
+        workspace: Workspace | None = None,
+    ) -> Observation:
         """
         Execute the action.
         """
 
-        message = self._execute(file_context=file_context)
+        message = self._execute(args, file_context=file_context, workspace=workspace)
         return Observation.create(message)
 
-    def _execute(self, file_context: FileContext) -> str | None:
+    def _execute(
+        self,
+        args: ActionArguments,
+        file_context: FileContext | None = None,
+        workspace: Workspace | None = None,
+    ) -> str | None:
         """
         Execute the action and return the updated FileContext.
         """
@@ -45,7 +56,13 @@ class Action(BaseModel, ABC):
 
     @property
     def name(self) -> str:
+        """Returns the name of the action class as a string."""
         return self.__class__.__name__
+
+    @classmethod
+    def get_name(cls) -> str:
+        """Returns the name of the action class as a string."""
+        return cls.__name__
 
     @classmethod
     def get_evaluation_criteria(cls, trajectory_length: int | None = None) -> List[str]:
@@ -54,6 +71,7 @@ class Action(BaseModel, ABC):
                 "Exploratory Actions: Recognize that initial searches and information-gathering steps are essential and should not be heavily penalized if they don't yield immediate results.",
                 "Appropriateness of Action: Evaluate if the action is logical given the agent's current knowledge and the early stage of problem-solving.",
             ]
+
         else:
             return [
                 "Solution Quality: Assess the logical changes, contextual fit, and overall improvement without introducing new issues.",
@@ -138,8 +156,10 @@ class Action(BaseModel, ABC):
         """
         return """Your role is to evaluate the **last executed action** of the search tree that our AI agents are traversing, to help us determine the best trajectory to solve a programming issue. The agent is responsible for identifying and modifying the correct file(s) in response to the problem statement.
 
+Important: While line numbers may be referenced in the initial problem description, they can shift as changes are made to the file. Focus on whether the agent is modifying the correct logical parts of the code, rather than strictly matching the initially mentioned line numbers. What matters is that the right section of code is being modified, even if its current line number differs from what was originally specified.
+
 At this stage, the agent is still working on the solution. Your task is twofold:
-1. **Evaluation**: Assess whether the change done by the **last executed action** is appropriate for addressing the problem and whether the agent is on the right path to resolving the issue.
+1. **Evaluation**: Assess whether the change done by the **last executed action** is appropriate for addressing the problem and whether the agent is on the right path to resolving the issue. Verify that the correct sections of code are being modified, regardless of their current line numbers.
 2. **Alternative Feedback**: Independently of your evaluation, provide guidance for an alternative problem-solving branch. This ensures parallel exploration of different solution paths.
 """
 
@@ -204,16 +224,18 @@ At this stage, the agent is still working on the solution. Your task is twofold:
                 if isinstance(obj, type) and issubclass(obj, Action) and obj != Action:
                     _actions[name] = obj
 
-
     @classmethod
-    def model_validate(cls, obj: Any,
-                       repository: Repository = None,
-                       runtime: Any = None,
-                       code_index: CodeIndex = None) -> "Action":
+    def model_validate(
+        cls,
+        obj: Any,
+        repository: Repository = None,
+        runtime: Any = None,
+        code_index: CodeIndex = None,
+    ) -> "Action":
         if isinstance(obj, dict):
             obj = obj.copy()
             action_class_path = obj.pop("action_class", None)
-            
+
             if action_class_path:
                 module_name, class_name = action_class_path.rsplit(".", 1)
                 module = importlib.import_module(module_name)
@@ -227,9 +249,8 @@ At this stage, the agent is still working on the solution. Your task is twofold:
                     obj["runtime"] = runtime
 
                 return action_class(**obj)
-                
-        return cls(**obj)
 
+        return cls(**obj)
 
     def model_dump(self, **kwargs) -> Dict[str, Any]:
         dump = super().model_dump(**kwargs)

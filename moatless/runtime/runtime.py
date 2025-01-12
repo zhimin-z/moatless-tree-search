@@ -15,6 +15,7 @@ class TestStatus(str, Enum):
 
 
 class TestResult(BaseModel):
+    name: Optional[str] = None
     status: TestStatus
     message: Optional[str] = None
     file_path: Optional[str] = None
@@ -26,7 +27,6 @@ class TestResult(BaseModel):
     )
 
 
-
 class RuntimeEnvironment(ABC):
     @abstractmethod
     def run_tests(
@@ -36,8 +36,7 @@ class RuntimeEnvironment(ABC):
 
 
 class NoEnvironment(RuntimeEnvironment):
-
     def run_tests(
-            self, patch: str | None = None, test_files: List[str] | None = None
+        self, patch: str | None = None, test_files: List[str] | None = None
     ) -> list[TestResult]:
         return []

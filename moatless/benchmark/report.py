@@ -17,9 +17,9 @@ from moatless.benchmark.utils import (
     read_search_trees,
 )
 from moatless.file_context import FileContext
-from moatless.index.code_index import is_test
 from moatless.node import Node
 from moatless.search_tree import SearchTree
+from moatless.utils.file import is_test
 
 logger = logging.getLogger(__name__)
 
@@ -175,6 +175,8 @@ class BenchmarkResult(BaseModel):
     fail_to_pass_count: int = 0
     pass_to_pass_count: int = 0
 
+    retries: int = 0
+
     max_build_tokens: int = 0
 
     alternative_solutions: int = 0
@@ -219,7 +221,7 @@ def create_trajectory_stats(
     test_files = []
     last_action_dump = None
     action_dumps = []
-    
+
     for node in nodes:
         if node.action:
             action_name = node.action.name
@@ -247,51 +249,36 @@ def create_trajectory_stats(
             if node.observation and node.observation.expect_correction:
                 result.expect_corrections += 1
 
-            if node.observation and node.observation.properties:
-                if "test_results" in node.observation.properties:
-                    test_results = node.observation.properties["test_results"]
-                    failed_tests = [
-                        test
-                        for test in test_results
-                        if test["status"] in ["FAILED", "ERROR"]
-                    ]
+            if node.file_context and node.file_context.test_files:
+                passed, failed, errored = node.file_context.get_test_counts()
+                failed_test_count = failed + errored
 
-                    for failed_test in failed_tests:
-                        file_paths_in_context = [
-                            file.file_path for file in node.file_context.files
-                        ]
-                        if (
-                            failed_test["file_path"]
-                            and not failed_test["file_path"] in file_paths_in_context
-                        ):
-                            if not "test_not_in_context" in result.flags:
-                                result.flags.append("test_not_in_context")
-
-                    failed_test_count = len(failed_tests)
-
+                if result.initial_failed_tests is None:
                     result.initial_failed_tests = failed_test_count
 
-                    if len(test_results) > result.max_tests_run:
-                        result.max_tests_run = len(test_results)
+                if passed + failed + errored > result.max_tests_run:
+                    result.max_tests_run = passed + failed + errored
 
-                    if failed_test_count > result.max_failed_tests:
-                        result.max_failed_tests = failed_test_count
+                if failed_test_count > result.max_failed_tests:
+                    result.max_failed_tests = failed_test_count
 
-                    if result.final_failed_tests is None:
-                        result.final_failed_tests = failed_test_count
+                if node.is_terminal():
+                    result.final_failed_tests = failed_test_count
+                    if failed_test_count > 0:
+                        result.flags.append("has_failed_tests")
 
-                    for test_result in test_results:
-                        if test_result["file_path"] not in test_files:
-                            test_files.append(test_result["file_path"])
-
+            if node.observation and node.observation.properties:
                 if "flags" in node.observation.properties:
                     for flag in node.observation.properties["flags"]:
                         if flag not in result.flags:
                             result.flags.append(flag)
 
                 if "fail_reason" in node.observation.properties:
-                    result.failed_actions += 1
                     fail_reason = node.observation.properties["fail_reason"]
+
+                    if fail_reason not in ["no_spans_added"]:
+                        result.failed_actions += 1
+
                     if fail_reason not in result.flags:
                         result.flags.append(fail_reason)
 
@@ -302,7 +289,7 @@ def create_trajectory_stats(
                     file_path = node.action.path
                 else:
                     file_path = ""
-    
+
                 if is_test(file_path):
                     result.test_edits += 1
                 else:
@@ -316,9 +303,12 @@ def create_trajectory_stats(
                     + node.completions["build_action"].usage.cached_tokens,
                 )
 
+                if node.completions["build_action"].retries:
+                    result.retries += node.completions["build_action"].retries
+
             current_action_dump = node.action.model_dump(exclude={"thoughts"})
             action_dumps.append(current_action_dump)
-            
+
             if current_action_dump in action_dumps[:-1]:
                 result.duplicated_actions += 1
 
@@ -332,8 +322,6 @@ def create_trajectory_stats(
             if evaluation_result.get("resolved") is not None
             else None
         )
-
-    result.reward = trajectory_state.reward.value if trajectory_state.reward else None
 
     if trajectory_state.file_context:
         patch = trajectory_state.file_context.generate_git_patch()
@@ -362,10 +350,14 @@ def create_trajectory_stats(
     if trajectory_state.reward:
         result.reward = trajectory_state.reward.value
 
-    if trajectory_state.is_terminal():
-        if trajectory_state.action and trajectory_state.action.name == "Finish":
+    if trajectory_state.error:
+        result.status = "error"
+    elif trajectory_state.is_terminal():
+        if trajectory_state.action and trajectory_state.action.name == "Error":
+            result.status = "error"
+        elif trajectory_state.action and trajectory_state.action.name == "Finish":
             result.status = "finished"
-        elif trajectory_state.action and trajectory_state.action.name in ["Reject", "Error"]:
+        elif trajectory_state.action and trajectory_state.action.name in ["Reject"]:
             result.status = "rejected"
             result.message = trajectory_state.observation.message
         else:
@@ -382,20 +374,13 @@ def to_result(
     search_tree: SearchTree,
     eval_report: dict | None = None,
     external_result: dict | None = None,
-    previous_result: dict | None = None,
 ) -> BenchmarkResult:
     info = search_tree.metadata
     instance = get_moatless_instance(info["instance_id"])
 
     if not eval_report:
+        logger.info(f"No eval report for {info['instance_id']}")
         eval_report = {}
-
-    if previous_result:
-        previous_resolved = (
-            info.get("instance_id", "") in previous_result["resolved_ids"]
-        )
-    else:
-        previous_resolved = None
 
     try:
         resolved = None
@@ -407,28 +392,30 @@ def to_result(
             status = "running"
         else:
             best_node = search_tree.get_best_trajectory()
-            if best_node:
-                best_stats = create_trajectory_stats(
-                    best_node,
-                    instance,
-                    eval_report.get("node_results", {}).get(str(best_node.node_id)),
-                )
-                status = best_stats.status
+            if not best_node:
+                status = "pending"
+            elif (
+                best_node.action and best_node.action.name == "Error"
+            ) or best_node.error:
+                status = "error"
+            elif not best_node.file_context.generate_git_patch():
+                status = "no_patch"
             else:
-                status = "unknown"
+                status = "completed"
 
-            if external_result:
+        if external_result:
+            resolved = info.get("instance_id", "") in external_result["resolved_ids"]
+
+        elif eval_report:
+            best_node = search_tree.get_best_trajectory()
+            if best_node:
                 resolved = (
-                    info.get("instance_id", "") in external_result["resolved_ids"]
+                    eval_report.get("node_results", {})
+                    .get(str(best_node.node_id), {})
+                    .get("resolved", None)
                 )
-                if best_stats:
-                    if resolved != best_stats.resolved:
-                        logger.warning(
-                            f"Resolved status mismatch for {info['instance_id']}: External {resolved} != Internal {best_stats.resolved}"
-                        )
-
-            elif best_stats:
-                resolved = best_stats.resolved
+            else:
+                logger.warning(f"No best node found for {info['instance_id']}")
 
         total_usage = search_tree.total_usage()
 
@@ -437,7 +424,6 @@ def to_result(
             trajectories=[],
             status=status,
             resolved=resolved,
-            previous_resolved=previous_resolved,
             duration=info.get("duration", 0),
             total_cost=total_usage.completion_cost,
             prompt_tokens=total_usage.prompt_tokens,
@@ -466,6 +452,7 @@ def to_result(
                 eval_report.get("node_results", {}).get(str(leaf_node.node_id)),
             )
             result.trajectories.append(traj)
+            result.retries += traj.retries
 
             for action, count in traj.actions.items():
                 result.actions[action] = result.actions.get(action, 0) + count
@@ -490,18 +477,14 @@ def to_result(
                     .get("resolved")
                     is not None
                 ):
-                    if (
-                        eval_report["node_results"]
-                        .get(str(traj.state_id), {})
-                        .get("resolved", False)
-                    ):
+                    if traj.resolved is True:
                         result.resolved_solutions += 1
                         if traj.reward and (
                             result.resolved_max_reward is None
                             or traj.reward > result.resolved_max_reward
                         ):
                             result.resolved_max_reward = traj.reward
-                    else:
+                    elif traj.resolved is False:
                         result.failed_solutions += 1
                         if traj.reward and (
                             result.failed_max_reward is None
@@ -522,24 +505,29 @@ def to_result(
                 if flag not in result.flags:
                     result.flags.append(flag)
 
-            result.max_build_tokens = max(result.max_build_tokens, traj.max_build_tokens)
+            result.max_build_tokens = max(
+                result.max_build_tokens, traj.max_build_tokens
+            )
 
             result.duplicated_actions += traj.duplicated_actions
 
         if eval_report.get("error"):
             result.error = eval_report["error"]
-            result.status = "error"
+            result.status = "eval_error"
         else:
             result.error = ""
 
-        if result.duplicated_actions > 0 and "has_duplicated_actions" not in result.flags:
+        if (
+            result.duplicated_actions > 0
+            and "has_duplicated_actions" not in result.flags
+        ):
             result.flags.append("has_duplicated_actions")
-        if result.edits == 0 and "no_edits" not in result.flags:
-            result.flags.append("no_edits")
         if result.test_edits == 0 and "no_test_edits" not in result.flags:
             result.flags.append("no_test_edits")
         if result.failed_actions > 0 and "has_failed_actions" not in result.flags:
             result.flags.append("has_failed_actions")
+        if result.retries > 0:
+            result.flags.append("has_retries")
 
     except Exception as e:
         raise e
@@ -667,12 +655,12 @@ def to_dataframe(
 
         for k, v in d.items():
             new_key = f"{parent_key}{sep}{k}" if parent_key else k
-            
+
             # Special handling for actions dictionary
             if k == "actions":
                 items.append((k, v))  # Keep actions as a dictionary
                 continue
-                
+
             if isinstance(v, dict):
                 items.extend(flatten_dict(v, new_key, sep=sep).items())
             else:

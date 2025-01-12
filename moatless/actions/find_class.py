@@ -3,7 +3,7 @@ from typing import List, Type, ClassVar
 
 from pydantic import Field, model_validator
 
-from moatless.actions.model import ActionArguments, FewShotExample, Observation
+from moatless.actions.model import ActionArguments, FewShotExample
 from moatless.actions.search_base import SearchBaseAction, SearchBaseArgs
 from moatless.index.types import SearchCodeResponse
 
@@ -21,17 +21,31 @@ class FindClassArgs(SearchBaseArgs):
     """
 
     class_name: str = Field(
-        ..., description="Specific class name to include in the search."
+        ...,
+        description="Specific class name to search for (e.g., 'UserRepository', not 'app.models.UserRepository').",
     )
 
     @model_validator(mode="after")
     def validate_names(self) -> "FindClassArgs":
         if not self.class_name.strip():
             raise ValueError("class_name cannot be empty")
+        # Extract just the class name if a fully qualified name is provided
+        if "." in self.class_name:
+            original_name = self.class_name
+            self.class_name = self.class_name.split(".")[-1]
+            logger.info(
+                f"Using class name '{self.class_name}' from fully qualified name '{original_name}'"
+            )
         return self
 
     class Config:
         title = "FindClass"
+
+    def short_summary(self) -> str:
+        param_str = f"class_name={self.class_name}"
+        if self.file_pattern:
+            param_str += f", file_pattern={self.file_pattern}"
+        return f"{self.name}({param_str})"
 
 
 class FindClass(SearchBaseAction):

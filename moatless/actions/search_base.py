@@ -2,17 +2,22 @@ import logging
 from abc import ABC
 from typing import List, Optional, Type, Any, ClassVar, Tuple
 
-from pydantic import Field, PrivateAttr, BaseModel, field_validator, model_validator
+from litellm.types.llms.openai import (
+    ChatCompletionAssistantMessage,
+    ChatCompletionUserMessage,
+)
+from pydantic import Field, PrivateAttr, BaseModel, field_validator
 
 from moatless.actions.action import Action
 from moatless.actions.model import ActionArguments, Observation, RewardScaleEntry
 from moatless.completion import CompletionModel
-from moatless.completion.model import UserMessage, AssistantMessage, Completion, StructuredOutput
+from moatless.completion.model import Completion, StructuredOutput
 from moatless.exceptions import CompletionRejectError
 from moatless.file_context import FileContext
 from moatless.index import CodeIndex
 from moatless.index.types import SearchCodeResponse
 from moatless.repository.repository import Repository
+from moatless.workspace import Workspace
 
 logger = logging.getLogger(__name__)
 
@@ -100,8 +105,8 @@ class SearchBaseAction(Action):
         10,
         description="The maximum number of search hits to display.",
     )
-    completion_model: Optional[CompletionModel] = Field(
-        None,
+    completion_model: CompletionModel = Field(
+        ...,
         description="The completion model used to identify relevant code sections in search results.",
     )
 
@@ -112,16 +117,18 @@ class SearchBaseAction(Action):
         self,
         repository: Repository = None,
         code_index: CodeIndex | None = None,
-        completion_model: CompletionModel | None = None,
+        completion_model: CompletionModel = None,
         **data,
     ):
         super().__init__(completion_model=completion_model, **data)
         self._repository = repository
         self._code_index = code_index
 
-
     def execute(
-        self, args: SearchBaseArgs, file_context: FileContext | None = None
+        self,
+        args: SearchBaseArgs,
+        file_context: FileContext | None = None,
+        workspace: Workspace | None = None,
     ) -> Observation:
         if file_context is None:
             raise ValueError(
@@ -141,19 +148,22 @@ class SearchBaseAction(Action):
 
         completion = None
 
-        if search_result_context.span_count() == 1 and search_result_context.context_size() > self.max_identify_tokens:
+        if (
+            search_result_context.span_count() == 1
+            and search_result_context.context_size() > self.max_identify_tokens
+        ):
             logger.warning(
                 f"{self.name}: Conext for {search_result_context.create_summary()} is too large ({search_result_context.context_size()} tokens)."
             )
             properties["fail_reason"] = "search_too_large"
             return Observation(
                 message="Search too large. Found a single code section that is too large to view. Please refine the search query.",
-                properties=properties
+                properties=properties,
             )
         elif (
-            (search_result_context.context_size() > self.max_search_tokens and search_result_context.span_count() > 1)
-            or search_result_context.span_count() > self.max_hits
-        ):
+            search_result_context.context_size() > self.max_search_tokens
+            and search_result_context.span_count() > 1
+        ) or search_result_context.span_count() > self.max_hits:
             logger.info(
                 f"{self.name}: Search too large. {properties['search_tokens']} tokens and {search_result_context.span_count()} hits, will ask for clarification."
             )
@@ -194,7 +204,6 @@ class SearchBaseAction(Action):
                 show_outcommented_code=True,
             )
 
-        new_span_ids = file_context.add_file_context(view_context)
         properties["new_span_ids"] = new_span_ids
 
         logger.info(
@@ -226,7 +235,7 @@ class SearchBaseAction(Action):
                 search_result_context.add_span_to_context(
                     hit.file_path, span.span_id, add_extra=True
                 )
-                
+
         return search_result_context, alternative_suggestion
 
     def _select_span_instructions(self, search_result: SearchCodeResponse) -> str:
@@ -281,33 +290,36 @@ class SearchBaseAction(Action):
 
         content += "\n\nIdentify the relevant code sections in the search results to use them. "
         content += f"\n\n<search_results>\n{search_result_str}\n</search_result>\n"
-        identify_message = UserMessage(content=content)
+        identify_message = ChatCompletionUserMessage(role="user", content=content)
 
         messages = [identify_message]
         completion = None
 
         MAX_RETRIES = 3
         for retry_attempt in range(MAX_RETRIES):
-            identified_code, completion = self.completion_model.create_completion(
+            completion_response = self.completion_model.create_completion(
                 messages=messages,
                 system_prompt=IDENTIFY_SYSTEM_PROMPT,
                 response_model=Identify,
             )
             logger.info(
-                f"Identifying relevant code sections. Attempt {retry_attempt + 1} of {MAX_RETRIES}.\n{identified_code.identified_spans}"
+                f"Identifying relevant code sections. Attempt {retry_attempt + 1} of {MAX_RETRIES}.{len(completion_response.structured_outputs)} identify requests."
             )
 
             view_context = FileContext(repo=self._repository)
-            if identified_code.identified_spans:
-                for identified_spans in identified_code.identified_spans:
-                    view_context.add_line_span_to_context(
-                        identified_spans.file_path,
-                        identified_spans.start_line,
-                        identified_spans.end_line,
-                        add_extra=True,
-                    )
-            else:
-                return view_context, completion
+            if not completion_response.structured_outputs:
+                logger.warning("No identified code in response")
+                return view_context, completion_response.completion
+
+            for identified_code in completion_response.structured_outputs:
+                if identified_code.identified_spans:
+                    for identified_spans in identified_code.identified_spans:
+                        view_context.add_line_span_to_context(
+                            identified_spans.file_path,
+                            identified_spans.start_line,
+                            identified_spans.end_line,
+                            add_extra=True,
+                        )
 
             tokens = view_context.context_size()
 
@@ -317,20 +329,23 @@ class SearchBaseAction(Action):
                 )
 
                 messages.append(
-                    AssistantMessage(content=identified_code.model_dump_json())
+                    ChatCompletionAssistantMessage(
+                        role="assistant", content=identified_code.model_dump_json()
+                    )
                 )
 
                 messages.append(
-                    UserMessage(
+                    ChatCompletionUserMessage(
+                        role="user",
                         content=f"The identified code sections are too large ({tokens} tokens). Maximum allowed is {self.max_search_tokens} tokens. "
-                        f"Please identify a smaller subset of the most relevant code sections."
+                        f"Please identify a smaller subset of the most relevant code sections.",
                     )
                 )
             else:
                 logger.info(
                     f"Identified code sections are within the token limit ({tokens} tokens)."
                 )
-                return view_context, completion
+                return view_context, completion_response.completion
 
         # If we've exhausted all retries and still too large
         raise CompletionRejectError(

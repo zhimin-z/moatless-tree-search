@@ -8,12 +8,12 @@ from moatless.actions.action import Action
 from moatless.actions.code_action_value_mixin import CodeActionValueMixin
 from moatless.actions.code_modification_mixin import CodeModificationMixin
 from moatless.actions.model import ActionArguments, Observation, FewShotExample
-from moatless.actions.run_tests import RunTests, RunTestsArgs
 from moatless.file_context import FileContext
 from moatless.index import CodeIndex
 from moatless.repository.file import do_diff
 from moatless.repository.repository import Repository
 from moatless.runtime.runtime import RuntimeEnvironment
+from moatless.workspace import Workspace
 
 logger = logging.getLogger(__name__)
 
@@ -42,10 +42,9 @@ class CreateFileArgs(ActionArguments):
 
     @classmethod
     def format_schema_for_llm(cls) -> str:
-        return cls.format_xml_schema({
-            "path": "file/path.py",
-            "file_text": "\ncomplete file content\n"
-        })
+        return cls.format_xml_schema(
+            {"path": "file/path.py", "file_text": "\ncomplete file content\n"}
+        )
 
 
 class CreateFile(Action, CodeActionValueMixin, CodeModificationMixin):
@@ -68,7 +67,12 @@ class CreateFile(Action, CodeActionValueMixin, CodeModificationMixin):
         object.__setattr__(self, "_code_index", code_index)
         object.__setattr__(self, "_repository", repository)
 
-    def execute(self, args: CreateFileArgs, file_context: FileContext) -> Observation:
+    def execute(
+        self,
+        args: CreateFileArgs,
+        file_context: FileContext | None = None,
+        workspace: Workspace | None = None,
+    ) -> Observation:
         if args.path.startswith("/repo"):
             args.path = args.path[5:]
         if args.path.startswith("/"):
@@ -82,7 +86,7 @@ class CreateFile(Action, CodeActionValueMixin, CodeModificationMixin):
                 properties={"fail_reason": "file_exists"},
             )
 
-        context_file = file_context.add_file(str(path))
+        context_file = file_context.add_file(str(path), show_all_spans=True)
         context_file.apply_changes(args.file_text)
 
         diff = do_diff(str(path), "", args.file_text)
@@ -101,7 +105,6 @@ class CreateFile(Action, CodeActionValueMixin, CodeModificationMixin):
             observation.message += f"\n\n{test_summary}"
 
         return observation
-
 
     @classmethod
     def get_few_shot_examples(cls) -> List[FewShotExample]:

@@ -2,7 +2,7 @@ from typing import Optional, List, Type, ClassVar
 
 from pydantic import Field, model_validator
 
-from moatless.actions.model import ActionArguments, FewShotExample, Observation
+from moatless.actions.model import ActionArguments, FewShotExample
 from moatless.actions.search_base import SearchBaseAction, SearchBaseArgs, logger
 from moatless.codeblocks import CodeBlockType
 from moatless.index.types import SearchCodeResponse, SearchCodeHit, SpanHit
@@ -45,6 +45,14 @@ class FindFunctionArgs(SearchBaseArgs):
         if self.file_pattern:
             prompt += f" in files matching the pattern: {self.file_pattern}"
         return prompt
+
+    def short_summary(self) -> str:
+        param_str = f"function_name={self.function_name}"
+        if self.file_pattern:
+            param_str += f", file_pattern={self.file_pattern}"
+        if self.class_name:
+            param_str += f", class_name={self.class_name}"
+        return f"{self.name}({param_str})"
 
 
 class FindFunction(SearchBaseAction):
