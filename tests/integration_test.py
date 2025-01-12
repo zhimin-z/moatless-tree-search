@@ -71,6 +71,13 @@ pytest.mark.llm_integration = pytest.mark.skipif(
             "message_history_type": MessageHistoryType.MESSAGES,
             "thoughts_in_action": True
         },
+        # Llama 3.1 70B Instruct
+        {
+            "model": "openrouter/meta-llama/llama-3.1-70b-instruct",
+            "response_format": LLMResponseFormat.REACT,
+            "message_history_type": MessageHistoryType.REACT,
+            "thoughts_in_action": False
+        },
         # Qwen 2.5 Coder
         {
             "model": "openrouter/qwen/qwen-2.5-coder-32b-instruct",
@@ -79,7 +86,7 @@ pytest.mark.llm_integration = pytest.mark.skipif(
             "thoughts_in_action": False
         }
     ],
-    ids=["claude-3-5-sonnet", "claude-3-5-haiku", "gpt-4o", "gpt-4o-mini", "deepseek-chat", "gemini-2.0-flash", "qwen-2.5-coder"]
+    ids=["claude-3-5-sonnet", "claude-3-5-haiku", "gpt-4o", "gpt-4o-mini", "deepseek-chat", "gemini-2.0-flash", "llama-3.1-70b", "qwen-2.5-coder"]
 )
 @pytest.mark.llm_integration
 def test_basic_coding_task(model):
